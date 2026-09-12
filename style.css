@@ -1,0 +1,896 @@
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+:root {
+    --background: #080b12;
+    --surface: #101522;
+    --surface-light: #171e2d;
+    --border: #242d3d;
+    --text: #ffffff;
+    --muted: #9ca8ba;
+    --blue: #3b82f6;
+    --blue-hover: #2563eb;
+}
+
+html {
+    scroll-behavior: smooth;
+}
+
+body {
+    font-family: Arial, Helvetica, sans-serif;
+    background: var(--background);
+    color: var(--text);
+    min-height: 100vh;
+}
+
+/* =========================================
+   TOP BAR
+========================================= */
+
+.topbar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 72px;
+    background: #0c111b;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    padding: 0 22px;
+    z-index: 1000;
+}
+
+.logo {
+    width: 240px;
+    font-size: 24px;
+    font-weight: 800;
+    color: white;
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+}
+
+.logo:hover {
+    opacity: 0.85;
+}
+
+/* =========================================
+   SEARCH
+========================================= */
+
+.search-box {
+    display: flex;
+    width: min(600px, 50vw);
+    height: 42px;
+    margin: 0 auto;
+}
+
+.search-box input {
+    flex: 1;
+    min-width: 0;
+    border: 1px solid var(--border);
+    border-right: none;
+    border-radius: 10px 0 0 10px;
+    background: #080c14;
+    color: white;
+    padding: 0 15px;
+    outline: none;
+    font-size: 15px;
+}
+
+.search-box input::placeholder {
+    color: #687386;
+}
+
+.search-box input:focus {
+    border-color: var(--blue);
+}
+
+.search-box button {
+    width: 50px;
+    border: 1px solid var(--border);
+    border-radius: 0 10px 10px 0;
+    background: var(--surface-light);
+    color: white;
+    cursor: pointer;
+    font-size: 17px;
+}
+
+.search-box button:hover {
+    background: #202a3d;
+}
+
+/* =========================================
+   TOP BUTTONS
+========================================= */
+
+.top-buttons {
+    width: 240px;
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+}
+
+.top-buttons button {
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: white;
+    padding: 10px 14px;
+    border-radius: 9px;
+    cursor: pointer;
+    font-weight: 600;
+    transition: background 0.15s ease;
+}
+
+.top-buttons button:hover {
+    background: var(--surface-light);
+}
+
+/* =========================================
+   SIDEBAR
+========================================= */
+
+.sidebar {
+    position: fixed;
+    left: 0;
+    top: 72px;
+    bottom: 0;
+    width: 240px;
+    background: #0b1019;
+    border-right: 1px solid var(--border);
+    padding: 18px 12px;
+    overflow-y: auto;
+    z-index: 900;
+}
+
+.sidebar button {
+    display: block;
+    width: 100%;
+    border: none;
+    background: transparent;
+    color: #dce3ee;
+    text-align: left;
+    padding: 13px 15px;
+    margin-bottom: 4px;
+    border-radius: 9px;
+    cursor: pointer;
+    font-size: 15px;
+    transition:
+        background 0.15s ease,
+        color 0.15s ease;
+}
+
+.sidebar button:hover {
+    background: var(--surface-light);
+    color: white;
+}
+
+/* =========================================
+   MAIN CONTENT
+========================================= */
+
+.main-content {
+    margin-left: 240px;
+    padding: 105px 30px 40px;
+    min-height: 100vh;
+    position: relative;
+    z-index: 1;
+}
+
+.main-content h1 {
+    font-size: 28px;
+    margin-bottom: 20px;
+}
+
+/* =========================================
+   WELCOME BOX
+========================================= */
+
+.welcome-box {
+    background:
+        linear-gradient(
+            135deg,
+            #111a2c,
+            #101522
+        );
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 24px;
+    margin-bottom: 28px;
+    position: relative;
+    z-index: 1;
+}
+
+.welcome-box h2 {
+    font-size: 21px;
+    margin-bottom: 8px;
+}
+
+.welcome-box p {
+    color: var(--muted);
+    font-size: 15px;
+}
+
+/* =========================================
+   VIDEO GRID
+========================================= */
+
+.video-grid {
+    display: grid;
+    grid-template-columns:
+        repeat(
+            auto-fill,
+            minmax(280px, 1fr)
+        );
+    gap: 24px;
+    width: 100%;
+
+    /*
+        IMPORTANT:
+        Keep the video grid above accidental
+        overlapping elements.
+    */
+    position: relative;
+    z-index: 10;
+    pointer-events: auto;
+}
+
+/* =========================================
+   VIDEO CARD
+========================================= */
+
+.clipfly-video-card {
+    width: 100%;
+    min-width: 0;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 13px;
+    overflow: hidden;
+
+    cursor: pointer;
+
+    /*
+        IMPORTANT CLICK FIX
+    */
+    position: relative;
+    z-index: 11;
+    pointer-events: auto;
+
+    transition:
+        transform 0.15s ease,
+        border-color 0.15s ease,
+        box-shadow 0.15s ease;
+}
+
+.clipfly-video-card:hover {
+    transform: translateY(-2px);
+    border-color: #344157;
+    box-shadow:
+        0 8px 25px rgba(0, 0, 0, 0.2);
+}
+
+/*
+    Make every part of the card clickable too.
+*/
+
+.clipfly-video-card,
+.clipfly-video-card * {
+    pointer-events: auto;
+}
+
+/* =========================================
+   HOME PAGE THUMBNAIL
+========================================= */
+
+.clipfly-thumbnail {
+    width: 100%;
+    height: 180px;
+    background: #05070b;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    position: relative;
+    cursor: pointer;
+}
+
+.clipfly-thumbnail img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+    transition:
+        transform 0.2s ease;
+    cursor: pointer;
+}
+
+.clipfly-video-card:hover .clipfly-thumbnail img {
+    transform: scale(1.03);
+}
+
+.clipfly-thumbnail span {
+    font-size: 42px;
+    cursor: pointer;
+}
+
+/* =========================================
+   VIDEO INFORMATION
+========================================= */
+
+.clipfly-video-info {
+    padding: 13px 14px 15px;
+    cursor: pointer;
+}
+
+.clipfly-video-title {
+    color: white;
+    font-size: 16px;
+    font-weight: 700;
+    line-height: 1.35;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    margin-bottom: 6px;
+    cursor: pointer;
+}
+
+.clipfly-video-user {
+    color: var(--muted);
+    font-size: 14px;
+    cursor: pointer;
+}
+
+/* =========================================
+   EMPTY VIDEOS
+========================================= */
+
+.empty-videos {
+    grid-column: 1 / -1;
+    text-align: center;
+    padding: 70px 20px;
+    color: var(--muted);
+}
+
+.empty-videos h2 {
+    color: white;
+    margin-bottom: 10px;
+}
+
+.empty-videos p {
+    color: var(--muted);
+}
+
+/* =========================================
+   GENERAL POPUPS
+========================================= */
+
+.popup {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.72);
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    z-index: 2000;
+}
+
+.popup-box {
+    position: relative;
+    width: min(500px, 100%);
+    max-height: 90vh;
+    overflow-y: auto;
+    background: #101722;
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 28px;
+    box-shadow:
+        0 25px 80px
+        rgba(0, 0, 0, 0.5);
+}
+
+.popup-box h2 {
+    margin-bottom: 8px;
+}
+
+.popup-box > p {
+    color: var(--muted);
+    margin-bottom: 22px;
+    line-height: 1.5;
+}
+
+/* =========================================
+   CLOSE BUTTON
+========================================= */
+
+.close-button {
+    position: absolute;
+    top: 13px;
+    right: 13px;
+    width: 34px;
+    height: 34px;
+    border: none;
+    border-radius: 8px;
+    background: #1b2433;
+    color: white;
+    cursor: pointer;
+    font-size: 17px;
+    z-index: 20;
+    transition:
+        background 0.15s ease;
+}
+
+.close-button:hover {
+    background: #293449;
+}
+
+/* =========================================
+   ACCOUNT FORM
+========================================= */
+
+.account-form {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.account-form input,
+.account-form textarea {
+    width: 100%;
+    border: 1px solid var(--border);
+    background: #090e17;
+    color: white;
+    border-radius: 9px;
+    padding: 12px 13px;
+    outline: none;
+    font-family: inherit;
+    font-size: 15px;
+}
+
+.account-form input::placeholder,
+.account-form textarea::placeholder {
+    color: #687386;
+}
+
+.account-form input:focus,
+.account-form textarea:focus {
+    border-color: var(--blue);
+}
+
+.account-form textarea {
+    min-height: 100px;
+    resize: vertical;
+}
+
+/* =========================================
+   BLUE BUTTON
+========================================= */
+
+.blue-button {
+    border: none;
+    background: var(--blue);
+    color: white;
+    border-radius: 9px;
+    padding: 12px 15px;
+    font-size: 15px;
+    font-weight: 700;
+    cursor: pointer;
+    transition:
+        background 0.15s ease,
+        opacity 0.15s ease;
+}
+
+.blue-button:hover {
+    background: var(--blue-hover);
+}
+
+.blue-button:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+/* =========================================
+   DARK BUTTON
+========================================= */
+
+.dark-button {
+    border: 1px solid var(--border);
+    background: #151c29;
+    color: white;
+    border-radius: 9px;
+    padding: 12px 15px;
+    font-size: 15px;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.dark-button:hover {
+    background: #202a3b;
+}
+
+/* =========================================
+   ACCOUNT SWITCH
+========================================= */
+
+.account-switch {
+    margin-top: 20px;
+    text-align: center;
+    color: var(--muted);
+    font-size: 14px;
+}
+
+.account-switch button {
+    border: none;
+    background: transparent;
+    color: #60a5fa;
+    cursor: pointer;
+    font-weight: 700;
+}
+
+.account-switch button:hover {
+    text-decoration: underline;
+}
+
+/* =========================================
+   PROFILE
+========================================= */
+
+.profile-picture-preview {
+    width: 110px;
+    height: 110px;
+    border-radius: 50%;
+    background: #182131;
+    border: 2px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    font-size: 40px;
+    margin: 0 auto 15px;
+}
+
+.profile-picture-preview img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.profile-picture-label {
+    display: block;
+    text-align: center;
+    color: #60a5fa;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    margin-bottom: 20px;
+}
+
+.profile-picture-label input {
+    display: none;
+}
+
+.profile-username {
+    color: var(--muted);
+    font-size: 14px;
+    margin-top: -5px;
+    margin-bottom: 2px;
+}
+
+/* =========================================
+   UPLOAD
+========================================= */
+
+.upload-label {
+    color: #dce3ee;
+    font-weight: 700;
+    font-size: 14px;
+    margin-top: 4px;
+}
+
+.upload-file {
+    padding: 10px !important;
+    cursor: pointer;
+}
+
+.thumbnail-upload-preview {
+    width: 100%;
+    height: 180px;
+    border: 1px dashed #3a465a;
+    border-radius: 10px;
+    background: #080c13;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    color: var(--muted);
+    font-size: 14px;
+}
+
+.thumbnail-upload-preview img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+/* =========================================
+   UPLOAD PROGRESS
+========================================= */
+
+.upload-progress-container {
+    display: none;
+    margin-top: 20px;
+}
+
+.upload-progress-bar {
+    width: 100%;
+    height: 9px;
+    background: #202838;
+    border-radius: 999px;
+    overflow: hidden;
+}
+
+.upload-progress-fill {
+    width: 0%;
+    height: 100%;
+    background: var(--blue);
+    border-radius: 999px;
+    transition:
+        width 0.2s ease;
+}
+
+.upload-progress-text {
+    color: var(--muted);
+    text-align: center;
+    font-size: 13px;
+    margin-top: 9px;
+}
+
+/* =========================================
+   MESSAGE POPUP
+========================================= */
+
+.message-icon {
+    text-align: center;
+    font-size: 42px;
+    margin-bottom: 10px;
+}
+
+#messagePopup .popup-box {
+    text-align: center;
+}
+
+#messageText {
+    color: var(--muted);
+    line-height: 1.5;
+    margin: 15px 0 22px;
+}
+
+/* =========================================
+   WATCH SCREEN
+========================================= */
+
+.watch-popup {
+    background: rgba(0, 0, 0, 0.88);
+    padding: 25px;
+}
+
+.watch-box {
+    position: relative;
+    width: min(1100px, 94vw);
+    max-height: 94vh;
+    background: #090e17;
+    border: 1px solid #252f40;
+    border-radius: 14px;
+    overflow: hidden;
+    box-shadow:
+        0 25px 100px
+        rgba(0, 0, 0, 0.7);
+}
+
+/* =========================================
+   ACTUAL WATCH VIDEO
+========================================= */
+
+.watch-box video {
+    display: block;
+    width: 100%;
+    height: auto;
+    max-height: 72vh;
+    min-height: 300px;
+    background: #000;
+    object-fit: contain;
+}
+
+/* =========================================
+   WATCH INFO
+========================================= */
+
+.watch-info {
+    padding: 18px 22px 22px;
+}
+
+.watch-info h2 {
+    margin: 0 0 7px;
+    color: white;
+    font-size: 22px;
+    line-height: 1.35;
+}
+
+.watch-username {
+    color: #9ca8ba;
+    font-size: 15px;
+}
+
+/* =========================================
+   WATCH CLOSE BUTTON
+========================================= */
+
+.watch-box .close-button {
+    top: 12px;
+    right: 12px;
+    background: rgba(10, 14, 22, 0.9);
+}
+
+.watch-box .close-button:hover {
+    background: #293449;
+}
+
+/* =========================================
+   SCROLLBARS
+========================================= */
+
+::-webkit-scrollbar {
+    width: 9px;
+    height: 9px;
+}
+
+::-webkit-scrollbar-track {
+    background: #080b12;
+}
+
+::-webkit-scrollbar-thumb {
+    background: #252f40;
+    border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: #344157;
+}
+
+/* =========================================
+   MOBILE
+========================================= */
+
+@media (max-width: 900px) {
+
+    .topbar {
+        padding: 0 12px;
+    }
+
+    .logo {
+        width: auto;
+        font-size: 20px;
+    }
+
+    .search-box {
+        width: 40vw;
+        margin-left: 20px;
+    }
+
+    .top-buttons {
+        width: auto;
+    }
+
+    .top-buttons button {
+        padding: 9px;
+    }
+
+    .sidebar {
+        width: 190px;
+    }
+
+    .main-content {
+        margin-left: 190px;
+        padding-left: 20px;
+        padding-right: 20px;
+    }
+}
+
+/* =========================================
+   SMALL MOBILE
+========================================= */
+
+@media (max-width: 650px) {
+
+    .topbar {
+        height: 64px;
+    }
+
+    .logo {
+        font-size: 18px;
+    }
+
+    .search-box {
+        display: none;
+    }
+
+    .top-buttons {
+        margin-left: auto;
+    }
+
+    .top-buttons button {
+        padding: 8px 10px;
+        font-size: 13px;
+    }
+
+    .sidebar {
+        top: 64px;
+        width: 65px;
+        padding: 12px 7px;
+    }
+
+    .sidebar button {
+        text-align: center;
+        font-size: 0;
+        padding: 13px 5px;
+    }
+
+    .sidebar button::first-letter {
+        font-size: 20px;
+    }
+
+    .main-content {
+        margin-left: 65px;
+        padding-top: 90px;
+        padding-left: 12px;
+        padding-right: 12px;
+    }
+
+    .main-content h1 {
+        font-size: 24px;
+    }
+
+    .welcome-box {
+        padding: 18px;
+    }
+
+    .video-grid {
+        grid-template-columns: 1fr;
+        gap: 18px;
+    }
+
+    .clipfly-thumbnail {
+        height: 200px;
+    }
+
+    .popup-box {
+        padding: 22px;
+        border-radius: 13px;
+    }
+
+    .watch-popup {
+        padding: 10px;
+    }
+
+    .watch-box {
+        width: 96vw;
+        border-radius: 10px;
+    }
+
+    .watch-box video {
+        min-height: 180px;
+        max-height: 55vh;
+    }
+
+    .watch-info {
+        padding: 15px;
+    }
+
+    .watch-info h2 {
+        font-size: 18px;
+    }
+}

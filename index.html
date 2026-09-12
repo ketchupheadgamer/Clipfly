@@ -1,0 +1,1040 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>Clipfly</title>
+
+    <link rel="stylesheet" href="style.css">
+
+    <style>
+        /* ACCOUNT GUI */
+
+        .account-form {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .account-form input,
+        .account-form textarea {
+            width: 100%;
+            box-sizing: border-box;
+            padding: 12px;
+            border-radius: 10px;
+            border: 1px solid #35353d;
+            background: #101014;
+            color: white;
+            outline: none;
+            font-family: inherit;
+        }
+
+        .account-form textarea {
+            min-height: 90px;
+            resize: vertical;
+        }
+
+        .account-form input:focus,
+        .account-form textarea:focus {
+            border-color: #3478ff;
+        }
+
+        .account-switch {
+            margin-top: 15px;
+            text-align: center;
+            font-size: 13px;
+            color: #9999a5;
+        }
+
+        .account-switch button {
+            background: none;
+            border: none;
+            color: #4b8cff;
+            cursor: pointer;
+            font-size: 13px;
+            padding: 0;
+        }
+
+        .account-switch button:hover {
+            text-decoration: underline;
+        }
+
+        .profile-picture-preview {
+            width: 90px;
+            height: 90px;
+            border-radius: 50%;
+            background: #292930;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 15px;
+            overflow: hidden;
+            font-size: 40px;
+        }
+
+        .profile-picture-preview img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        .profile-picture-label {
+            display: block;
+            text-align: center;
+            color: #4b8cff;
+            cursor: pointer;
+            font-size: 14px;
+            margin-bottom: 15px;
+        }
+
+        .profile-picture-label input {
+            display: none;
+        }
+
+        .profile-username {
+            color: #9999a5;
+            font-size: 14px;
+            margin-top: -5px;
+            margin-bottom: 5px;
+        }
+    </style>
+</head>
+
+<body>
+
+    <!-- TOP BAR -->
+
+    <header class="topbar">
+
+        <div class="logo" onclick="home()">
+            🎬 Clipfly
+        </div>
+
+        <div class="search-box">
+
+            <input
+                id="searchInput"
+                type="text"
+                placeholder="Search"
+            >
+
+            <button onclick="searchVideos()">
+                🔍
+            </button>
+
+        </div>
+
+        <div class="top-buttons">
+
+            <!-- CLIPFLY LIVE -->
+            <button
+                id="clipflyGoLiveButton"
+                type="button"
+                onclick="openLiveSetup()"
+            >
+                🔴 Go Live
+            </button>
+
+            <button onclick="openUpload()">
+                ⬆ Upload
+            </button>
+
+            <button onclick="openAccount()">
+                👤 Account
+            </button>
+
+        </div>
+
+    </header>
+
+
+    <!-- SIDEBAR -->
+
+    <aside class="sidebar">
+
+        <button onclick="home()">
+            🏠 Home
+        </button>
+
+        <button onclick="openTrending()">
+            🔥 Trending
+        </button>
+
+        <button onclick="openShorts()">
+            🎞 Shorts
+        </button>
+
+        <button onclick="openSubscriptions()">
+            📺 Subscriptions
+        </button>
+
+        <button onclick="openHistory()">
+            🕘 History
+        </button>
+
+        <button onclick="openLikedVideos()">
+            👍 Liked Videos
+        </button>
+
+        <button onclick="openLibrary()">
+            📚 Library
+        </button>
+
+    </aside>
+
+
+    <!-- MAIN CONTENT -->
+
+    <main class="main-content">
+
+        <h1>
+            Recommended
+        </h1>
+
+        <div class="welcome-box">
+
+            <h2>
+                Welcome to Clipfly! 🎬
+            </h2>
+
+            <p>
+                Watch, upload, and share your favorite videos.
+            </p>
+
+        </div>
+
+
+        <div id="videoGrid" class="video-grid"></div>
+
+    </main>
+
+
+    <!-- WATCH VIDEO POPUP -->
+
+    <div id="watchPopup" class="popup" style="display:none;">
+
+        <div
+            class="popup-box watch-popup-box"
+            style="width:min(1000px,94vw);max-width:1000px;max-height:92vh;overflow-y:auto;"
+        >
+
+            <button
+                class="close-button"
+                type="button"
+                onclick="closeWatch()"
+                aria-label="Close video"
+            >
+                ✕
+            </button>
+
+            <div class="watch-video-wrap" style="width:100%;">
+
+                <video
+                    id="watchVideo"
+                    controls
+                    playsinline
+                    preload="metadata"
+                    style="display:block;width:100%;max-height:65vh;background:#000;border-radius:12px;object-fit:contain;"
+                ></video>
+
+            </div>
+
+            <div
+                class="watch-video-info"
+                style="padding:14px 4px 4px;"
+            >
+
+                <h2
+                    id="watchTitle"
+                    style="margin:0 0 8px;font-size:22px;word-break:break-word;"
+                >
+                    Untitled Video
+                </h2>
+
+                <div
+                    id="watchUsername"
+                    style="font-size:15px;opacity:.8;display:flex;align-items:center;gap:6px;"
+                >
+                    @User
+                </div>
+
+            </div>
+
+        </div>
+
+    </div>
+
+
+    <!-- ACCOUNT POPUP -->
+
+    <div id="accountPopup" class="popup">
+
+        <div class="popup-box">
+
+            <button
+                class="close-button"
+                onclick="closeAccount()"
+            >
+                ✕
+            </button>
+
+
+            <!-- CREATE ACCOUNT -->
+
+            <div id="createAccountScreen">
+
+                <h2>
+                    Create your Clipfly account 👤
+                </h2>
+
+                <p>
+                    Join Clipfly and start watching, uploading, and sharing.
+                </p>
+
+                <div class="account-form">
+
+                    <input
+                        id="emailInput"
+                        type="email"
+                        placeholder="Email"
+                        autocomplete="email"
+                    >
+
+                    <input
+                        id="usernameInput"
+                        type="text"
+                        placeholder="Username"
+                        autocomplete="username"
+                        maxlength="30"
+                    >
+
+                    <input
+                        id="passwordInput"
+                        type="password"
+                        placeholder="Password"
+                        autocomplete="new-password"
+                    >
+
+                    <button
+                        class="blue-button"
+                        onclick="signUp()"
+                    >
+                        Create Account
+                    </button>
+
+                </div>
+
+
+                <div class="account-switch">
+
+                    Have an account already?
+
+                    <button onclick="showLoginScreen()">
+                        Log in here
+                    </button>
+
+                </div>
+
+            </div>
+
+
+            <!-- LOGIN -->
+
+            <div
+                id="loginScreen"
+                style="display: none;"
+            >
+
+                <h2>
+                    Welcome back! 👋
+                </h2>
+
+                <p>
+                    Log in to your Clipfly account.
+                </p>
+
+                <div class="account-form">
+
+                    <input
+                        id="loginEmailInput"
+                        type="email"
+                        placeholder="Email"
+                        autocomplete="email"
+                    >
+
+                    <input
+                        id="loginPasswordInput"
+                        type="password"
+                        placeholder="Password"
+                        autocomplete="current-password"
+                    >
+
+                    <button
+                        class="blue-button"
+                        onclick="logIn()"
+                    >
+                        Log In
+                    </button>
+
+                </div>
+
+
+                <div class="account-switch">
+
+                    Don't have an account?
+
+                    <button onclick="showCreateAccountScreen()">
+                        Create one
+                    </button>
+
+                </div>
+
+            </div>
+
+
+            <!-- LOGGED-IN PROFILE -->
+
+            <div
+                id="profileScreen"
+                style="display: none;"
+            >
+
+                <h2>
+                    Your Clipfly Profile 👤
+                </h2>
+
+
+                <div
+                    id="profilePicturePreview"
+                    class="profile-picture-preview"
+                >
+                    👤
+                </div>
+
+
+                <label class="profile-picture-label">
+
+                    Change profile picture
+
+                    <input
+                        id="profilePictureInput"
+                        type="file"
+                        accept="image/png,image/jpeg,image/webp"
+                        onchange="previewProfilePicture()"
+                    >
+
+                </label>
+
+
+                <div class="account-form">
+
+                    <input
+                        id="displayNameInput"
+                        type="text"
+                        placeholder="Display Name"
+                        maxlength="50"
+                    >
+
+                    <input
+                        id="profileUsernameInput"
+                        type="text"
+                        placeholder="Username"
+                        maxlength="30"
+                    >
+
+                    <div
+                        id="currentUsernameText"
+                        class="profile-username"
+                    >
+                    </div>
+
+                    <textarea
+                        id="bioInput"
+                        placeholder="Bio"
+                        maxlength="160"
+                    ></textarea>
+
+
+                    <button
+                        class="blue-button"
+                        onclick="saveProfile()"
+                    >
+                        Save Profile
+                    </button>
+
+
+                    <button
+                        class="dark-button"
+                        onclick="logOut()"
+                    >
+                        Log Out
+                    </button>
+
+                </div>
+
+            </div>
+
+        </div>
+
+    </div>
+
+
+    <!-- UPLOAD POPUP -->
+
+    <div id="uploadPopup" class="popup">
+
+        <div
+            class="popup-box"
+            style="width:min(650px,94vw);max-height:90vh;overflow-y:auto;"
+        >
+
+            <button
+                class="close-button"
+                onclick="closeUpload()"
+                type="button"
+            >
+                ✕
+            </button>
+
+            <h2>
+                Upload Video ⬆
+            </h2>
+
+            <div class="account-form">
+
+                <input
+                    id="videoTitleInput"
+                    type="text"
+                    placeholder="Video title"
+                    maxlength="120"
+                    autocomplete="off"
+                >
+
+                <label style="display:block;">
+
+                    <span style="display:block;margin-bottom:8px;">
+                        Video file
+                    </span>
+
+                    <input
+                        id="videoFileInput"
+                        type="file"
+                        accept="video/*"
+                        style="width:100%;box-sizing:border-box;"
+                    >
+
+                </label>
+
+                <label style="display:block;">
+
+                    <span style="display:block;margin-bottom:8px;">
+                        Thumbnail (optional)
+                    </span>
+
+                    <input
+                        id="thumbnailFileInput"
+                        type="file"
+                        accept="image/png,image/jpeg,image/webp,image/gif"
+                        onchange="previewThumbnail()"
+                        style="width:100%;box-sizing:border-box;"
+                    >
+
+                </label>
+
+                <div
+                    id="thumbnailPreview"
+                    style="width:100%;aspect-ratio:16/9;border-radius:12px;background:#101014;display:flex;align-items:center;justify-content:center;overflow:hidden;color:#888;"
+                >
+                    <span>🖼️ Thumbnail preview</span>
+                </div>
+
+                <div
+                    id="uploadProgressContainer"
+                    style="display:none;width:100%;"
+                >
+
+                    <div
+                        style="width:100%;height:10px;border-radius:999px;background:#292930;overflow:hidden;"
+                    >
+
+                        <div
+                            id="uploadProgressFill"
+                            style="width:0%;height:100%;transition:width .2s ease;background:#3478ff;"
+                        ></div>
+
+                    </div>
+
+                    <div
+                        id="uploadProgressText"
+                        style="margin-top:8px;text-align:center;font-size:14px;color:#9999a5;"
+                    >
+                        Preparing...
+                    </div>
+
+                </div>
+
+                <button
+                    id="uploadVideoButton"
+                    class="blue-button"
+                    onclick="uploadVideo()"
+                    type="button"
+                >
+                    ⬆ Upload Video
+                </button>
+
+            </div>
+
+        </div>
+
+    </div>
+
+
+    <!-- CLIPFLY LIVE SETUP -->
+
+    <div
+        id="liveSetupPopup"
+        class="popup"
+        style="display:none;"
+    >
+
+        <div
+            class="popup-box"
+            style="width:min(700px,94vw);max-height:90vh;overflow-y:auto;"
+        >
+
+            <button
+                class="close-button"
+                type="button"
+                onclick="closeLiveSetup()"
+            >
+                ✕
+            </button>
+
+            <h2>
+                🔴 Go Live
+            </h2>
+
+            <p>
+                Start a Clipfly livestream by sharing your screen or a browser tab.
+            </p>
+
+            <div class="account-form">
+
+                <input
+                    id="liveTitleInput"
+                    type="text"
+                    placeholder="Livestream name"
+                    maxlength="120"
+                    autocomplete="off"
+                >
+
+                <label style="display:block;">
+                    <span style="display:block;margin-bottom:8px;">
+                        What do you want to share?
+                    </span>
+
+                    <div style="display:flex;gap:10px;flex-wrap:wrap;">
+
+                        <button
+                            id="liveScreenButton"
+                            class="blue-button"
+                            type="button"
+                            onclick="setLiveMode('screen')"
+                        >
+                            🖥️ Entire screen
+                        </button>
+
+                        <button
+                            id="liveTabButton"
+                            class="dark-button"
+                            type="button"
+                            onclick="setLiveMode('tab')"
+                        >
+                            🌐 Browser tab
+                        </button>
+
+                    </div>
+                </label>
+
+                <label style="display:block;">
+
+                    <span style="display:block;margin-bottom:8px;">
+                        Thumbnail (optional)
+                    </span>
+
+                    <input
+                        id="liveThumbnailInput"
+                        type="file"
+                        accept="image/png,image/jpeg,image/webp,image/gif"
+                        onchange="previewLiveThumbnail()"
+                        style="width:100%;box-sizing:border-box;"
+                    >
+
+                </label>
+
+                <div
+                    id="liveThumbnailPreview"
+                    style="width:100%;aspect-ratio:16/9;border-radius:12px;background:#101014;display:flex;align-items:center;justify-content:center;overflow:hidden;color:#888;"
+                >
+                    <span>🖼️ Thumbnail preview</span>
+                </div>
+
+                <div
+                    id="liveSetupStatus"
+                    style="padding:12px;border-radius:10px;background:#101014;color:#9999a5;"
+                >
+                    Ready to go live.
+                </div>
+
+                <div style="display:flex;gap:10px;justify-content:flex-end;">
+
+                    <button
+                        class="dark-button"
+                        type="button"
+                        onclick="closeLiveSetup()"
+                    >
+                        Cancel
+                    </button>
+
+                    <button
+                        class="blue-button"
+                        type="button"
+                        onclick="startLive()"
+                    >
+                        🔴 Go Live
+                    </button>
+
+                </div>
+
+            </div>
+
+        </div>
+
+    </div>
+
+
+    <!-- CLIPFLY LIVE WINDOW -->
+
+    <div
+        id="livePopup"
+        class="popup"
+        style="display:none;"
+    >
+
+        <div
+            class="popup-box"
+            style="width:min(1100px,96vw);max-height:92vh;overflow-y:auto;"
+        >
+
+            <button
+                class="close-button"
+                type="button"
+                onclick="closeLiveWindow()"
+            >
+                ✕
+            </button>
+
+            <h2
+                id="liveTitleDisplay"
+                style="margin-bottom:12px;"
+            >
+                🔴 Live
+            </h2>
+
+            <video
+                id="livePreviewVideo"
+                autoplay
+                muted
+                playsinline
+                controls
+                style="width:100%;max-height:60vh;background:#000;border-radius:14px;object-fit:contain;display:block;"
+            ></video>
+
+            <div
+                id="liveStatus"
+                style="margin-top:12px;padding:12px;border-radius:10px;background:#101014;color:#aaa;"
+            >
+                🔴 You are live.
+            </div>
+
+            <div
+                style="margin-top:18px;border:1px solid #30303a;border-radius:12px;overflow:hidden;"
+            >
+
+                <div
+                    id="liveChatMessages"
+                    style="height:190px;overflow-y:auto;padding:12px;background:#101014;"
+                >
+
+                    <div style="margin-bottom:8px;">
+                        <strong>Clipfly:</strong>
+                        Live chat started!
+                    </div>
+
+                </div>
+
+                <div
+                    style="display:flex;gap:8px;padding:10px;background:#18181f;"
+                >
+
+                    <input
+                        id="liveChatInput"
+                        type="text"
+                        maxlength="300"
+                        placeholder="Say something..."
+                        style="flex:1;box-sizing:border-box;padding:12px;border-radius:10px;border:1px solid #35353d;background:#101014;color:white;outline:none;"
+                    >
+
+                    <button
+                        class="blue-button"
+                        type="button"
+                        onclick="sendLiveChat()"
+                    >
+                        Send
+                    </button>
+
+                </div>
+
+            </div>
+
+        </div>
+
+    </div>
+
+
+    <!-- LIVE CHANGE POPUP -->
+
+    <div
+        id="changeLivePopup"
+        class="popup"
+        style="display:none;"
+    >
+
+        <div
+            class="popup-box"
+            style="width:min(650px,94vw);max-height:90vh;overflow-y:auto;"
+        >
+
+            <button
+                class="close-button"
+                type="button"
+                onclick="closeChangeLive()"
+            >
+                ✕
+            </button>
+
+            <h2>
+                🔄 Change Live
+            </h2>
+
+            <div class="account-form">
+
+                <input
+                    id="changeLiveTitleInput"
+                    type="text"
+                    placeholder="Livestream name"
+                    maxlength="120"
+                >
+
+                <label style="display:block;">
+
+                    <span style="display:block;margin-bottom:8px;">
+                        Change thumbnail (optional)
+                    </span>
+
+                    <input
+                        id="changeLiveThumbnailInput"
+                        type="file"
+                        accept="image/png,image/jpeg,image/webp,image/gif"
+                        onchange="previewChangeLiveThumbnail()"
+                        style="width:100%;box-sizing:border-box;"
+                    >
+
+                </label>
+
+                <div
+                    id="changeLiveThumbnailPreview"
+                    style="width:100%;aspect-ratio:16/9;border-radius:12px;background:#101014;display:flex;align-items:center;justify-content:center;overflow:hidden;color:#888;"
+                >
+                    <span>🖼️ Thumbnail preview</span>
+                </div>
+
+                <div
+                    style="display:flex;gap:10px;flex-wrap:wrap;"
+                >
+
+                    <button
+                        id="changeLiveScreenButton"
+                        class="blue-button"
+                        type="button"
+                        onclick="changeLiveSource('screen')"
+                    >
+                        🖥️ Entire screen
+                    </button>
+
+                    <button
+                        id="changeLiveTabButton"
+                        class="dark-button"
+                        type="button"
+                        onclick="changeLiveSource('tab')"
+                    >
+                        🌐 Browser tab
+                    </button>
+
+                </div>
+
+                <button
+                    class="blue-button"
+                    type="button"
+                    onclick="saveLiveChanges()"
+                >
+                    Save Changes
+                </button>
+
+            </div>
+
+        </div>
+
+    </div>
+
+
+    <!-- END LIVE CONFIRMATION -->
+
+    <div
+        id="endLivePopup"
+        class="popup"
+        style="display:none;"
+    >
+
+        <div class="popup-box">
+
+            <h2>
+                End livestream?
+            </h2>
+
+            <p>
+                Are you sure you want to end your livestream?
+            </p>
+
+            <div
+                style="display:flex;gap:10px;justify-content:flex-end;"
+            >
+
+                <button
+                    class="dark-button"
+                    type="button"
+                    onclick="closeEndLive()"
+                >
+                    Cancel
+                </button>
+
+                <button
+                    class="blue-button"
+                    type="button"
+                    onclick="confirmEndLive()"
+                    style="background:#e53935;"
+                >
+                    End Livestream
+                </button>
+
+            </div>
+
+        </div>
+
+    </div>
+
+
+    <!-- KEEP OR DELETE LIVE -->
+
+    <div
+        id="keepLivePopup"
+        class="popup"
+        style="display:none;"
+    >
+
+        <div class="popup-box">
+
+            <h2>
+                Livestream ended
+            </h2>
+
+            <p>
+                Would you like to delete or keep the livestream on your channel?
+            </p>
+
+            <div
+                style="display:flex;gap:10px;flex-wrap:wrap;"
+            >
+
+                <button
+                    class="dark-button"
+                    type="button"
+                    onclick="deleteEndedLive()"
+                >
+                    🗑️ Delete Livestream
+                </button>
+
+                <button
+                    class="blue-button"
+                    type="button"
+                    onclick="keepEndedLive()"
+                >
+                    📺 Keep on Channel
+                </button>
+
+            </div>
+
+        </div>
+
+    </div>
+
+
+    <!-- MESSAGE POPUP -->
+
+    <div id="messagePopup" class="popup">
+
+        <div class="popup-box">
+
+            <div
+                id="messageIcon"
+                class="message-icon"
+            >
+                ✨
+            </div>
+
+            <h2 id="messageTitle">
+                Message
+            </h2>
+
+            <p id="messageText">
+            </p>
+
+            <button
+                class="blue-button"
+                onclick="closeMessage()"
+            >
+                OK
+            </button>
+
+        </div>
+
+    </div>
+
+
+    <!-- SUPABASE -->
+
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
+    <script src="supabase.js"></script>
+
+    <!-- YOUR NEW CLIPFLY LIVE SCRIPT -->
+    <script src="live.js"></script>
+
+    <!-- YOUR EXISTING CLIPFLY SCRIPT -->
+    <script src="script.js"></script>
+
+</body>
+
+</html>

@@ -6,9 +6,18 @@
      * A "Short" is any video with #shorts (or #short) in its title.
      * Shorts come in a fresh random order every time the tab is opened.
      * Uses the existing video_reactions and video_comments tables.
+     *
+     * This file also holds the comment system with replies, which is used
+     * by the Shorts comment panel AND by the normal video watch window.
      */
 
     var PAGE_SIZE = 10;
+
+    var COMMENT_COLUMNS =
+        "id, video_id, user_id, username, avatar_url, comment, created_at, parent_id";
+
+    var COMMENT_COLUMNS_OLD =
+        "id, video_id, user_id, username, avatar_url, comment, created_at";
 
     var view = null;
     var stage = null;
@@ -23,7 +32,6 @@
     var suspended = false;
     var shortsMuted = false;
     var commentsOpen = false;
-    var commentsToken = 0;
     var wheelLocked = false;
     var wheelTimer = null;
 
@@ -130,7 +138,677 @@
 
     /*
      * =========================================
-     * STYLES
+     * COMMENTS WITH REPLIES
+     * A reply is a comment whose parent_id points at the comment it
+     * answers. Like YouTube, replies sit one level deep.
+     * =========================================
+     */
+
+    function ensureCommentStyles() {
+        if (byId("clipflyCommentStyles")) {
+            return;
+        }
+
+        var style = document.createElement("style");
+
+        style.id = "clipflyCommentStyles";
+
+        style.textContent = `
+            .cfc-empty {
+                padding: 24px 0;
+                text-align: center;
+                opacity: 0.65;
+            }
+
+            .cfc-comment {
+                display: flex;
+                gap: 10px;
+                padding: 10px 0;
+                border-top: 1px solid rgba(255, 255, 255, 0.07);
+            }
+
+            .cfc-comment:first-child {
+                border-top: none;
+            }
+
+            .cfc-comment.cfc-reply {
+                border-top: none;
+                padding: 8px 0 4px;
+            }
+
+            .cfc-avatar {
+                width: 36px;
+                height: 36px;
+                min-width: 36px;
+                border-radius: 50%;
+                background: rgba(255, 255, 255, 0.1);
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                overflow: hidden;
+                cursor: pointer;
+            }
+
+            .cfc-reply .cfc-avatar {
+                width: 28px;
+                height: 28px;
+                min-width: 28px;
+                font-size: 14px;
+            }
+
+            .cfc-avatar img {
+                width: 100%;
+                height: 100%;
+                object-fit: cover;
+                display: block;
+            }
+
+            .cfc-body {
+                flex: 1;
+                min-width: 0;
+            }
+
+            .cfc-top {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                flex-wrap: wrap;
+                margin-bottom: 3px;
+            }
+
+            .cfc-name {
+                display: inline-flex;
+                align-items: center;
+                font-weight: 700;
+                font-size: 14px;
+            }
+
+            .cfc-date {
+                font-size: 12px;
+                opacity: 0.6;
+            }
+
+            .cfc-delete {
+                margin-left: auto;
+                border: none;
+                background: transparent;
+                color: inherit;
+                opacity: 0.6;
+                cursor: pointer;
+                padding: 4px 6px;
+                border-radius: 6px;
+            }
+
+            .cfc-delete:hover {
+                opacity: 1;
+                background: rgba(255, 255, 255, 0.08);
+            }
+
+            .cfc-text {
+                font-size: 14px;
+                line-height: 1.4;
+                white-space: pre-wrap;
+                overflow-wrap: anywhere;
+            }
+
+            .cfc-actions {
+                margin-top: 4px;
+            }
+
+            .cfc-link {
+                border: none;
+                background: transparent;
+                color: inherit;
+                opacity: 0.7;
+                cursor: pointer;
+                font-size: 13px;
+                font-weight: 700;
+                padding: 4px 8px 4px 0;
+            }
+
+            .cfc-link:hover {
+                opacity: 1;
+            }
+
+            .cfc-replybox {
+                display: none;
+                align-items: center;
+                gap: 8px;
+                flex-wrap: wrap;
+                margin-top: 6px;
+            }
+
+            .cfc-replybox input {
+                flex: 1;
+                min-width: 120px;
+                padding: 9px 11px;
+                border: 1px solid rgba(255, 255, 255, 0.18);
+                border-radius: 10px;
+                background: rgba(255, 255, 255, 0.06);
+                color: inherit;
+                outline: none;
+                font-family: inherit;
+                font-size: 14px;
+            }
+
+            .cfc-replybox input:focus {
+                border-color: #3b82f6;
+            }
+
+            .cfc-send {
+                border: none;
+                border-radius: 10px;
+                padding: 9px 14px;
+                background: #3b82f6;
+                color: #ffffff;
+                cursor: pointer;
+                font-weight: 700;
+                font-size: 13px;
+            }
+
+            .cfc-send:disabled {
+                opacity: 0.6;
+                cursor: not-allowed;
+            }
+
+            .cfc-cancel {
+                border: none;
+                background: transparent;
+                color: inherit;
+                opacity: 0.7;
+                cursor: pointer;
+                font-size: 13px;
+                font-weight: 700;
+            }
+
+            .cfc-toggle {
+                border: none;
+                background: transparent;
+                color: #60a5fa;
+                cursor: pointer;
+                font-size: 13px;
+                font-weight: 700;
+                padding: 6px 0;
+            }
+
+            .cfc-toggle:hover {
+                text-decoration: underline;
+            }
+
+            .cfc-replies {
+                margin-top: 2px;
+            }
+        `;
+
+        document.head.appendChild(style);
+    }
+
+    function makeCommentAvatar(comment) {
+        var avatar = el("div", "cfc-avatar");
+
+        avatar.title = "Open @" + (comment.username || "User") + "'s channel";
+
+        if (comment.avatar_url) {
+            var image = document.createElement("img");
+
+            image.src = comment.avatar_url;
+            image.alt = "";
+
+            image.onerror = function () {
+                image.remove();
+                avatar.textContent = "👤";
+            };
+
+            avatar.appendChild(image);
+
+        } else {
+            avatar.textContent = "👤";
+        }
+
+        avatar.addEventListener("click", function (event) {
+            event.stopPropagation();
+
+            if (typeof openUserChannel === "function") {
+                openUserChannel(
+                    comment.username || "User",
+                    comment.avatar_url || null,
+                    comment.user_id || null
+                );
+            }
+        });
+
+        return avatar;
+    }
+
+    function buildReplyBox(ctx, threadTop, target, isReply) {
+        var box = el("div", "cfc-replybox");
+
+        var input = document.createElement("input");
+
+        input.type = "text";
+        input.maxLength = 1000;
+        input.autocomplete = "off";
+        input.placeholder = "Reply to @" + (target.username || "User") + "...";
+
+        var mention = isReply ? "@" + (target.username || "User") + " " : "";
+
+        var send = el("button", "cfc-send", "Reply");
+
+        send.type = "button";
+
+        var cancel = el("button", "cfc-cancel", "Cancel");
+
+        cancel.type = "button";
+
+        cancel.addEventListener("click", function () {
+            box.style.display = "none";
+        });
+
+        async function submit() {
+            var text = input.value.trim();
+
+            if (!text || text === mention.trim()) {
+                return;
+            }
+
+            var user = await getUser();
+
+            if (!user) {
+                say(
+                    "Log in required",
+                    "You need to be logged in to reply to comments.",
+                    "🔒"
+                );
+
+                return;
+            }
+
+            var meta = user.user_metadata || {};
+
+            send.disabled = true;
+            send.textContent = "Posting...";
+
+            try {
+                var result = await window.supabaseClient
+                    .from("video_comments")
+                    .insert({
+                        video_id: ctx.videoId,
+                        user_id: user.id,
+                        username: meta.username || "User",
+                        avatar_url: meta.avatar_url || null,
+                        comment: text,
+                        parent_id: threadTop.id
+                    });
+
+                if (result.error) {
+                    throw result.error;
+                }
+
+                // Keep this thread open so the new reply is visible.
+                ctx.list.__cfcOpen[threadTop.id] = true;
+
+                await renderComments(ctx.list, ctx.videoId, ctx.options);
+
+            } catch (error) {
+                console.error("Reply failed:", error);
+
+                send.disabled = false;
+                send.textContent = "Reply";
+
+                say(
+                    "Reply failed",
+                    error.message || "Could not post your reply.",
+                    "❌"
+                );
+            }
+        }
+
+        send.addEventListener("click", submit);
+
+        input.addEventListener("keydown", function (event) {
+            if (event.key === "Enter") {
+                event.preventDefault();
+                submit();
+            }
+        });
+
+        box.appendChild(input);
+        box.appendChild(send);
+        box.appendChild(cancel);
+
+        box.openBox = function () {
+            box.style.display = "flex";
+
+            if (!input.value) {
+                input.value = mention;
+            }
+
+            input.focus();
+
+            try {
+                input.setSelectionRange(input.value.length, input.value.length);
+            } catch (error) {
+                console.warn(error);
+            }
+        };
+
+        return box;
+    }
+
+    async function deleteOwnComment(ctx, comment, replyCount) {
+        var user = await getUser();
+
+        if (!user || !comment.id) {
+            return;
+        }
+
+        var message =
+            replyCount > 0
+                ? "Delete your comment? Its " +
+                  replyCount +
+                  (replyCount === 1 ? " reply" : " replies") +
+                  " will be deleted too."
+                : "Delete your comment?";
+
+        if (!window.confirm(message)) {
+            return;
+        }
+
+        try {
+            var result = await window.supabaseClient
+                .from("video_comments")
+                .delete()
+                .eq("id", comment.id)
+                .eq("user_id", user.id);
+
+            if (result.error) {
+                throw result.error;
+            }
+
+            await renderComments(ctx.list, ctx.videoId, ctx.options);
+
+        } catch (error) {
+            console.error("Delete comment failed:", error);
+
+            say(
+                "Delete failed",
+                error.message || "Could not delete your comment.",
+                "❌"
+            );
+        }
+    }
+
+    function buildCommentRow(ctx, comment, threadTop, isReply, replyCount) {
+        var row = el("div", "cfc-comment" + (isReply ? " cfc-reply" : ""));
+
+        row.appendChild(makeCommentAvatar(comment));
+
+        var body = el("div", "cfc-body");
+        var top = el("div", "cfc-top");
+
+        var name = el("span", "cfc-name");
+
+        name.appendChild(
+            document.createTextNode("@" + (comment.username || "User"))
+        );
+
+        var profile = ctx.profiles[comment.user_id];
+
+        if (typeof addVerifiedBadge === "function") {
+            addVerifiedBadge(name, !!(profile && profile.verified));
+        }
+
+        var date = el(
+            "span",
+            "cfc-date",
+            new Date(comment.created_at).toLocaleDateString(undefined, {
+                year: "numeric",
+                month: "short",
+                day: "numeric"
+            })
+        );
+
+        top.appendChild(name);
+        top.appendChild(date);
+
+        if (ctx.me && comment.user_id === ctx.me.id) {
+            var remove = el("button", "cfc-delete", "🗑️");
+
+            remove.type = "button";
+            remove.title = "Delete comment";
+
+            remove.addEventListener("click", function () {
+                deleteOwnComment(ctx, comment, replyCount);
+            });
+
+            top.appendChild(remove);
+        }
+
+        var text = el("div", "cfc-text", comment.comment);
+
+        body.appendChild(top);
+        body.appendChild(text);
+
+        if (ctx.canReply) {
+            var actions = el("div", "cfc-actions");
+
+            var replyButton = el("button", "cfc-link", "Reply");
+
+            replyButton.type = "button";
+
+            var box = buildReplyBox(ctx, threadTop, comment, isReply);
+
+            replyButton.addEventListener("click", function () {
+                if (box.style.display === "flex") {
+                    box.style.display = "none";
+                } else {
+                    box.openBox();
+                }
+            });
+
+            actions.appendChild(replyButton);
+
+            body.appendChild(actions);
+            body.appendChild(box);
+        }
+
+        row.appendChild(body);
+
+        return row;
+    }
+
+    function buildThread(ctx, comment, replyList) {
+        var row = buildCommentRow(ctx, comment, comment, false, replyList.length);
+
+        if (replyList.length === 0) {
+            return row;
+        }
+
+        var body = row.querySelector(".cfc-body");
+
+        var holder = el("div", "cfc-replies");
+
+        holder.style.display = ctx.list.__cfcOpen[comment.id] ? "block" : "none";
+
+        var toggle = el("button", "cfc-toggle");
+
+        toggle.type = "button";
+
+        function refreshLabel() {
+            var count = replyList.length;
+
+            toggle.textContent =
+                (holder.style.display === "none" ? "▾ " : "▴ ") +
+                count +
+                (count === 1 ? " reply" : " replies");
+        }
+
+        toggle.addEventListener("click", function () {
+            var opening = holder.style.display === "none";
+
+            holder.style.display = opening ? "block" : "none";
+
+            ctx.list.__cfcOpen[comment.id] = opening;
+
+            refreshLabel();
+        });
+
+        replyList.forEach(function (reply) {
+            holder.appendChild(
+                buildCommentRow(ctx, reply, comment, true, 0)
+            );
+        });
+
+        refreshLabel();
+
+        body.appendChild(toggle);
+        body.appendChild(holder);
+
+        return row;
+    }
+
+    async function renderComments(list, videoId, options) {
+        options = options || {};
+
+        if (!list || !videoId || !window.supabaseClient) {
+            return;
+        }
+
+        ensureCommentStyles();
+
+        var token = (list.__cfcToken || 0) + 1;
+
+        list.__cfcToken = token;
+
+        var keepScroll = list.scrollTop;
+
+        if (!list.__cfcOpen) {
+            list.__cfcOpen = {};
+        }
+
+        if (list.__cfcVideo !== videoId) {
+            list.__cfcVideo = videoId;
+            list.__cfcOpen = {};
+
+            keepScroll = 0;
+
+            list.innerHTML = "";
+            list.appendChild(el("div", "cfc-empty", "Loading comments..."));
+        }
+
+        var canReply = true;
+        var comments = [];
+
+        try {
+            var result = await window.supabaseClient
+                .from("video_comments")
+                .select(COMMENT_COLUMNS)
+                .eq("video_id", videoId)
+                .order("created_at", { ascending: false });
+
+            if (result.error) {
+                // The reply column isn't there yet (SQL not run): show
+                // normal comments without reply buttons.
+                canReply = false;
+
+                result = await window.supabaseClient
+                    .from("video_comments")
+                    .select(COMMENT_COLUMNS_OLD)
+                    .eq("video_id", videoId)
+                    .order("created_at", { ascending: false });
+
+                if (result.error) {
+                    throw result.error;
+                }
+            }
+
+            comments = result.data || [];
+
+        } catch (error) {
+            console.error("Could not load comments:", error);
+
+            if (token === list.__cfcToken) {
+                list.innerHTML = "";
+                list.appendChild(el("div", "cfc-empty", "Could not load comments."));
+            }
+
+            return;
+        }
+
+        var profiles = {};
+
+        try {
+            if (typeof getProfilesByIds === "function") {
+                profiles = await getProfilesByIds(
+                    comments.map(function (comment) {
+                        return comment.user_id;
+                    })
+                );
+            }
+        } catch (error) {
+            profiles = {};
+        }
+
+        if (token !== list.__cfcToken) {
+            return;
+        }
+
+        if (options.onCount) {
+            options.onCount(comments.length);
+        }
+
+        var topLevel = [];
+        var replies = {};
+
+        comments.forEach(function (comment) {
+            if (canReply && comment.parent_id) {
+                if (!replies[comment.parent_id]) {
+                    replies[comment.parent_id] = [];
+                }
+
+                replies[comment.parent_id].push(comment);
+
+            } else {
+                topLevel.push(comment);
+            }
+        });
+
+        // Replies read oldest first, like YouTube.
+        Object.keys(replies).forEach(function (key) {
+            replies[key].sort(function (a, b) {
+                return new Date(a.created_at) - new Date(b.created_at);
+            });
+        });
+
+        list.innerHTML = "";
+
+        if (topLevel.length === 0) {
+            list.appendChild(
+                el("div", "cfc-empty", "No comments yet. Be the first! 💬")
+            );
+
+            return;
+        }
+
+        var ctx = {
+            list: list,
+            videoId: videoId,
+            options: options,
+            canReply: canReply,
+            me: window.currentUser,
+            profiles: profiles
+        };
+
+        topLevel.forEach(function (comment) {
+            list.appendChild(buildThread(ctx, comment, replies[comment.id] || []));
+        });
+
+        list.scrollTop = keepScroll;
+    }
+
+    /*
+     * =========================================
+     * STYLES (Shorts)
      * =========================================
      */
 
@@ -447,84 +1125,6 @@
                 overflow-y: auto;
                 padding: 6px 16px;
                 overscroll-behavior: contain;
-            }
-
-            .clipfly-shorts-empty {
-                padding: 24px 0;
-                text-align: center;
-                color: #9ca8ba;
-            }
-
-            .clipfly-shorts-comment {
-                display: flex;
-                gap: 10px;
-                padding: 10px 0;
-            }
-
-            .clipfly-shorts-comment-avatar {
-                width: 36px;
-                height: 36px;
-                min-width: 36px;
-                border-radius: 50%;
-                background: #292930;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                overflow: hidden;
-                cursor: pointer;
-            }
-
-            .clipfly-shorts-comment-avatar img {
-                width: 100%;
-                height: 100%;
-                object-fit: cover;
-                display: block;
-            }
-
-            .clipfly-shorts-comment-body {
-                flex: 1;
-                min-width: 0;
-            }
-
-            .clipfly-shorts-comment-top {
-                display: flex;
-                align-items: center;
-                gap: 8px;
-                margin-bottom: 3px;
-            }
-
-            .clipfly-shorts-comment-name {
-                display: inline-flex;
-                align-items: center;
-                font-weight: 700;
-                font-size: 14px;
-            }
-
-            .clipfly-shorts-comment-date {
-                font-size: 12px;
-                color: #9ca8ba;
-            }
-
-            .clipfly-shorts-comment-delete {
-                margin-left: auto;
-                border: none;
-                background: transparent;
-                color: #9ca8ba;
-                cursor: pointer;
-                padding: 4px 6px;
-                border-radius: 6px;
-            }
-
-            .clipfly-shorts-comment-delete:hover {
-                background: rgba(255, 255, 255, 0.08);
-                color: #ffffff;
-            }
-
-            .clipfly-shorts-comment-text {
-                font-size: 14px;
-                line-height: 1.4;
-                white-space: pre-wrap;
-                overflow-wrap: anywhere;
             }
 
             #clipflyShortsCommentForm {
@@ -1486,7 +2086,7 @@
 
     /*
      * =========================================
-     * COMMENTS
+     * SHORTS COMMENT PANEL
      * =========================================
      */
 
@@ -1565,7 +2165,6 @@
 
     function closeComments() {
         commentsOpen = false;
-        commentsToken++;
 
         if (panel) {
             panel.classList.remove("open");
@@ -1580,173 +2179,18 @@
             return;
         }
 
-        var token = ++commentsToken;
+        await renderComments(list, item.video.id, {
+            onCount: function (count) {
+                item.comments = count;
 
-        list.innerHTML = "";
-        list.appendChild(
-            el("div", "clipfly-shorts-empty", "Loading comments...")
-        );
+                updateItemUI(item);
+                syncCopies(item);
 
-        try {
-            var result = await window.supabaseClient
-                .from("video_comments")
-                .select(
-                    "id, video_id, user_id, username, avatar_url, comment, created_at"
-                )
-                .eq("video_id", item.video.id)
-                .order("created_at", { ascending: false });
-
-            if (result.error) {
-                throw result.error;
-            }
-
-            var comments = result.data || [];
-            var profiles = {};
-
-            try {
-                if (typeof getProfilesByIds === "function") {
-                    profiles = await getProfilesByIds(
-                        comments.map(function (comment) {
-                            return comment.user_id;
-                        })
-                    );
+                if (title) {
+                    title.textContent = "Comments (" + count + ")";
                 }
-            } catch (error) {
-                profiles = {};
             }
-
-            if (token !== commentsToken) {
-                return;
-            }
-
-            item.comments = comments.length;
-
-            updateItemUI(item);
-            syncCopies(item);
-
-            if (title) {
-                title.textContent = "Comments (" + comments.length + ")";
-            }
-
-            list.innerHTML = "";
-
-            if (comments.length === 0) {
-                list.appendChild(
-                    el(
-                        "div",
-                        "clipfly-shorts-empty",
-                        "No comments yet. Be the first! 💬"
-                    )
-                );
-
-                return;
-            }
-
-            var me = window.currentUser;
-
-            comments.forEach(function (comment) {
-                var row = el("div", "clipfly-shorts-comment");
-
-                var avatar = el("div", "clipfly-shorts-comment-avatar");
-
-                if (comment.avatar_url) {
-                    var image = document.createElement("img");
-
-                    image.src = comment.avatar_url;
-                    image.alt = "";
-
-                    image.onerror = function () {
-                        image.remove();
-                        avatar.textContent = "👤";
-                    };
-
-                    avatar.appendChild(image);
-
-                } else {
-                    avatar.textContent = "👤";
-                }
-
-                avatar.addEventListener("click", function () {
-                    if (typeof openUserChannel === "function") {
-                        openUserChannel(
-                            comment.username || "User",
-                            comment.avatar_url || null,
-                            comment.user_id || null
-                        );
-                    }
-                });
-
-                var body = el("div", "clipfly-shorts-comment-body");
-                var top = el("div", "clipfly-shorts-comment-top");
-
-                var name = el("span", "clipfly-shorts-comment-name");
-
-                name.appendChild(
-                    document.createTextNode("@" + (comment.username || "User"))
-                );
-
-                var profile = profiles[comment.user_id];
-
-                if (typeof addVerifiedBadge === "function") {
-                    addVerifiedBadge(name, !!(profile && profile.verified));
-                }
-
-                var date = el(
-                    "span",
-                    "clipfly-shorts-comment-date",
-                    new Date(comment.created_at).toLocaleDateString(undefined, {
-                        year: "numeric",
-                        month: "short",
-                        day: "numeric"
-                    })
-                );
-
-                top.appendChild(name);
-                top.appendChild(date);
-
-                if (me && comment.user_id === me.id) {
-                    var remove = el("button", "clipfly-shorts-comment-delete", "🗑️");
-
-                    remove.type = "button";
-                    remove.title = "Delete comment";
-
-                    remove.addEventListener("click", function () {
-                        deleteComment(item, comment.id);
-                    });
-
-                    top.appendChild(remove);
-                }
-
-                var text = el(
-                    "div",
-                    "clipfly-shorts-comment-text",
-                    comment.comment
-                );
-
-                body.appendChild(top);
-                body.appendChild(text);
-
-                row.appendChild(avatar);
-                row.appendChild(body);
-
-                list.appendChild(row);
-            });
-
-        } catch (error) {
-            console.error("Could not load comments:", error);
-
-            if (token === commentsToken) {
-                list.innerHTML = "";
-
-                list.appendChild(
-                    el(
-                        "div",
-                        "clipfly-shorts-empty",
-                        "Could not load comments."
-                    )
-                );
-            }
-        }
+        });
     }
 
     async function postComment() {
@@ -1821,41 +2265,6 @@
                 button.disabled = false;
                 button.textContent = "Post";
             }
-        }
-    }
-
-    async function deleteComment(item, commentId) {
-        var user = await getUser();
-
-        if (!user || !commentId) {
-            return;
-        }
-
-        if (!window.confirm("Delete your comment?")) {
-            return;
-        }
-
-        try {
-            var result = await window.supabaseClient
-                .from("video_comments")
-                .delete()
-                .eq("id", commentId)
-                .eq("user_id", user.id);
-
-            if (result.error) {
-                throw result.error;
-            }
-
-            await loadComments(item);
-
-        } catch (error) {
-            console.error("Delete comment failed:", error);
-
-            say(
-                "Delete failed",
-                error.message || "Could not delete your comment.",
-                "❌"
-            );
         }
     }
 
@@ -2022,6 +2431,25 @@
     function init() {
         // The sidebar "Shorts" button calls this.
         window.loadShortVideos = showShorts;
+
+        // The normal video watch window uses the same comments with replies.
+        window.loadComments = function (videoId) {
+            var list = byId("clipflyCommentsList");
+
+            if (!list || !videoId) {
+                return Promise.resolve();
+            }
+
+            return renderComments(list, videoId, {
+                onCount: function (count) {
+                    var title = byId("clipflyCommentsTitle");
+
+                    if (title) {
+                        title.textContent = "Comments (" + count + ")";
+                    }
+                }
+            });
+        };
 
         wrapGlobal(
             "openClipflySection",

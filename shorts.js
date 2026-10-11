@@ -4,6 +4,7 @@
     /*
      * Clipfly Shorts: a vertical, one-at-a-time scrolling feed.
      * A "Short" is any video with #shorts (or #short) in its title.
+     * Shorts come in a fresh random order every time the tab is opened.
      * Uses the existing video_reactions and video_comments tables.
      */
 
@@ -29,7 +30,10 @@
     function newState() {
         return {
             items: [],
-            offset: 0,
+            ids: null,
+            queue: [],
+            pos: 0,
+            lastId: null,
             done: false,
             loading: false,
             active: -1
@@ -80,6 +84,20 @@
         } else {
             alert(title + "\n\n" + text);
         }
+    }
+
+    function shuffle(list) {
+        var copy = list.slice();
+
+        for (var i = copy.length - 1; i > 0; i--) {
+            var j = Math.floor(Math.random() * (i + 1));
+            var temp = copy[i];
+
+            copy[i] = copy[j];
+            copy[j] = temp;
+        }
+
+        return copy;
     }
 
     async function getUser() {
@@ -714,7 +732,7 @@
 
     /*
      * =========================================
-     * LOADING SHORTS
+     * LOADING SHORTS (random order)
      * =========================================
      */
 
@@ -783,6 +801,39 @@
         return stats;
     }
 
+    // Gets the id of every Short (just the ids, so it's fast).
+    async function fetchShortIds() {
+        var ids = [];
+        var from = 0;
+
+        while (ids.length < 5000) {
+            var result = await window.supabaseClient
+                .from("videos")
+                .select("id")
+                .ilike("title", "%#short%")
+                .order("id", { ascending: true })
+                .range(from, from + 999);
+
+            if (result.error) {
+                throw result.error;
+            }
+
+            var rows = result.data || [];
+
+            if (rows.length === 0) {
+                break;
+            }
+
+            rows.forEach(function (row) {
+                ids.push(row.id);
+            });
+
+            from += rows.length;
+        }
+
+        return ids;
+    }
+
     async function loadMore(first) {
         var s = state;
 
@@ -793,27 +844,92 @@
         s.loading = true;
 
         try {
-            var result = await window.supabaseClient
-                .from("videos")
-                .select("*")
-                .ilike("title", "%#short%")
-                .order("id", { ascending: false })
-                .range(s.offset, s.offset + PAGE_SIZE - 1);
+            // First time: get every Short and shuffle them.
+            if (!s.ids) {
+                var allIds = await fetchShortIds();
 
-            if (result.error) {
-                throw result.error;
+                if (s !== state) {
+                    return;
+                }
+
+                s.ids = allIds;
+                s.queue = shuffle(allIds);
+                s.pos = 0;
             }
 
-            var rows = result.data || [];
+            if (s.ids.length === 0) {
+                s.done = true;
 
-            if (s !== state) {
+                setMessage(
+                    "No Shorts yet",
+                    "Upload a video with #shorts in the title to put it here."
+                );
+
                 return;
             }
 
-            s.offset += rows.length;
+            var rows = [];
 
-            if (rows.length < PAGE_SIZE) {
-                s.done = true;
+            for (var attempt = 0; attempt < 5 && rows.length === 0; attempt++) {
+                // Out of shorts? Reshuffle so the feed never ends.
+                if (s.pos >= s.queue.length) {
+                    if (s.ids.length < 2) {
+                        s.done = true;
+                        break;
+                    }
+
+                    var again = shuffle(s.ids);
+
+                    // Don't show the same short twice in a row.
+                    if (again[0] === s.lastId) {
+                        var swap = again[0];
+
+                        again[0] = again[1];
+                        again[1] = swap;
+                    }
+
+                    s.queue = again;
+                    s.pos = 0;
+                }
+
+                var batch = s.queue.slice(s.pos, s.pos + PAGE_SIZE);
+
+                s.pos += batch.length;
+
+                if (batch.length > 0) {
+                    s.lastId = batch[batch.length - 1];
+                }
+
+                var result = await window.supabaseClient
+                    .from("videos")
+                    .select("*")
+                    .in("id", batch);
+
+                if (result.error) {
+                    throw result.error;
+                }
+
+                if (s !== state) {
+                    return;
+                }
+
+                // The database returns them in any order, so put them back
+                // into the shuffled order.
+                var videoMap = {};
+
+                (result.data || []).forEach(function (video) {
+                    videoMap[video.id] = video;
+                });
+
+                rows = batch
+                    .map(function (id) {
+                        return videoMap[id];
+                    })
+                    .filter(Boolean);
+            }
+
+            if (s !== state) {
+                return;
             }
 
             var stats = await fetchStats(
@@ -901,6 +1017,20 @@
 
         item.likeButton.classList.toggle("active", item.mine === "like");
         item.dislikeButton.classList.toggle("active", item.mine === "dislike");
+    }
+
+    // If the same short shows up again later, keep its numbers matching.
+    function syncCopies(item) {
+        state.items.forEach(function (other) {
+            if (other !== item && other.video.id === item.video.id) {
+                other.likes = item.likes;
+                other.dislikes = item.dislikes;
+                other.comments = item.comments;
+                other.mine = item.mine;
+
+                updateItemUI(other);
+            }
+        });
     }
 
     function addShort(video, stat, profile) {
@@ -1278,10 +1408,9 @@
         item.mine = next;
 
         updateItemUI(item);
+        syncCopies(item);
 
         try {
-            var table = window.supabaseClient.from("video_reactions");
-
             var existing = await window.supabaseClient
                 .from("video_reactions")
                 .select("id, reaction")
@@ -1342,6 +1471,7 @@
             item.mine = before.mine;
 
             updateItemUI(item);
+            syncCopies(item);
 
             say(
                 "Reaction failed",
@@ -1492,6 +1622,7 @@
             item.comments = comments.length;
 
             updateItemUI(item);
+            syncCopies(item);
 
             if (title) {
                 title.textContent = "Comments (" + comments.length + ")";
@@ -1854,12 +1985,15 @@
             setTimeout(async function () {
                 var items = state.items.slice();
 
-                var stats = await fetchStats(
-                    items.map(function (item) {
-                        return item.video.id;
-                    }),
-                    id
+                var uniqueIds = Array.from(
+                    new Set(
+                        items.map(function (item) {
+                            return item.video.id;
+                        })
+                    )
                 );
+
+                var stats = await fetchStats(uniqueIds, id);
 
                 items.forEach(function (item) {
                     var stat = stats[item.video.id];

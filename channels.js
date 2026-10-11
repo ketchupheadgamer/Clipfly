@@ -2,12 +2,14 @@
     "use strict";
 
     /*
-     * Channel pages and the Subscriptions list:
+     * Channel pages, the Subscriptions list and profile badges:
      *  - shows profile pictures for everyone (not just verified accounts)
      *  - shows a subscriber count
      *  - adds Subscribe / Unsubscribe to a channel's profile window
+     *  - shows a paintbrush badge for accounts with badge = 'paintbrush'
+     *    in the Supabase profiles table (everyone else keeps the blue check)
      *
-     * Needs the SQL function get_channel_profiles in Supabase.
+     * Needs the SQL functions/columns in Supabase.
      */
 
     var channelRequest = 0;
@@ -31,6 +33,194 @@
 
         return text + (n === 1 ? " subscriber" : " subscribers");
     }
+
+    /*
+     * =========================================
+     * PROFILE BADGES
+     * =========================================
+     */
+
+    var lastProfile = null;
+    var clearQueued = false;
+
+    // Remember which profile was just checked, so the badge function can
+    // tell which person it is drawing a badge for.
+    function rememberProfile(profile) {
+        lastProfile = profile;
+
+        if (!clearQueued) {
+            clearQueued = true;
+
+            Promise.resolve().then(function () {
+                lastProfile = null;
+                clearQueued = false;
+            });
+        }
+    }
+
+    function trackProfile(profile) {
+        if (!profile || profile.__clipflyTracked) {
+            return profile;
+        }
+
+        var realVerified = !!profile.verified;
+        var hasBadge = !!profile.badge;
+
+        Object.defineProperty(profile, "verified", {
+            configurable: true,
+            enumerable: true,
+            get: function () {
+                rememberProfile(profile);
+
+                return realVerified || hasBadge;
+            }
+        });
+
+        Object.defineProperty(profile, "__clipflyTracked", { value: true });
+
+        return profile;
+    }
+
+    function ensureBadgeStyles() {
+        if (byId("clipflyBadgeStyles")) {
+            return;
+        }
+
+        var style = document.createElement("style");
+
+        style.id = "clipflyBadgeStyles";
+
+        style.textContent = `
+            .clipfly-verified-badge.clipfly-badge-paintbrush {
+                background: linear-gradient(135deg, #a855f7, #ec4899);
+                color: #ffffff;
+            }
+
+            .clipfly-badge-paintbrush svg {
+                width: 11px;
+                height: 11px;
+                display: block;
+                fill: currentColor;
+            }
+        `;
+
+        document.head.appendChild(style);
+    }
+
+    function createBadgeElement(type) {
+        if (type === "paintbrush") {
+            ensureBadgeStyles();
+
+            var badge = document.createElement("span");
+
+            badge.className = "clipfly-verified-badge clipfly-badge-paintbrush";
+            badge.title = "Clipfly paintbrush";
+            badge.setAttribute("aria-label", "Clipfly paintbrush");
+            badge.setAttribute("data-clipfly-verified-badge", "true");
+
+            badge.innerHTML =
+                '<svg viewBox="0 0 24 24" aria-hidden="true">' +
+                '<path d="M7 14c-1.66 0-3 1.34-3 3 0 1.31-1.16 2-2 2 .92 1.22 2.49 2 4 2 2.21 0 4-1.79 4-4 0-1.66-1.34-3-3-3zm13.71-9.37l-1.34-1.34c-.39-.39-1.02-.39-1.41 0L9 12.25 11.75 15l8.96-8.96c.39-.39.39-1.02 0-1.41z"/>' +
+                "</svg>";
+
+            return badge;
+        }
+
+        if (typeof createVerifiedBadge === "function") {
+            return createVerifiedBadge();
+        }
+
+        var fallback = document.createElement("span");
+
+        fallback.className = "clipfly-verified-badge";
+        fallback.textContent = "\u2713";
+
+        return fallback;
+    }
+
+    // Replaces addVerifiedBadge from script.js so it can draw either badge.
+    window.addVerifiedBadge = function (parent, verified, badge) {
+        var profile = lastProfile;
+
+        lastProfile = null;
+
+        if (!parent || !verified) {
+            return;
+        }
+
+        var type =
+            badge !== undefined
+                ? badge
+                : (profile && profile.badge) || null;
+
+        parent.appendChild(createBadgeElement(type));
+    };
+
+    // Replace the profile loaders so they also read the badge column.
+    var originalGetProfileById = window.getProfileById;
+    var originalGetProfilesByIds = window.getProfilesByIds;
+
+    async function selectProfilesWithBadge(ids) {
+        var result = await window.supabaseClient
+            .from("profiles")
+            .select("id, username, avatar_url, verified, badge")
+            .in("id", ids);
+
+        if (result.error) {
+            throw result.error;
+        }
+
+        return result.data || [];
+    }
+
+    window.getProfilesByIds = async function (userIds) {
+        var ids = Array.from(new Set((userIds || []).filter(Boolean)));
+        var map = {};
+
+        if (ids.length === 0 || !window.supabaseClient) {
+            return map;
+        }
+
+        try {
+            var rows = await selectProfilesWithBadge(ids);
+
+            rows.forEach(function (profile) {
+                map[profile.id] = trackProfile(profile);
+            });
+
+            return map;
+
+        } catch (error) {
+            console.warn("Badge lookup failed (did you run the SQL?):", error);
+
+            if (typeof originalGetProfilesByIds === "function") {
+                return originalGetProfilesByIds(userIds);
+            }
+
+            return map;
+        }
+    };
+
+    window.getProfileById = async function (userId) {
+        if (!userId || !window.supabaseClient) {
+            return null;
+        }
+
+        try {
+            var rows = await selectProfilesWithBadge([userId]);
+
+            return rows.length > 0 ? trackProfile(rows[0]) : null;
+
+        } catch (error) {
+            console.warn("Badge lookup failed (did you run the SQL?):", error);
+
+            if (typeof originalGetProfileById === "function") {
+                return originalGetProfileById(userId);
+            }
+
+            return null;
+        }
+    };
 
     /*
      * =========================================
@@ -81,6 +271,7 @@
                         username: profile.username,
                         avatar_url: profile.avatar_url,
                         verified: profile.verified,
+                        badge: null,
                         subscribers: null
                     };
                 });
@@ -167,6 +358,7 @@
                                 username: video.username || "User",
                                 avatar_url: null,
                                 verified: false,
+                                badge: null,
                                 subscribers: null
                             };
                         }
@@ -244,7 +436,7 @@
                 name.textContent = profile.username || "User";
 
                 if (typeof addVerifiedBadge === "function") {
-                    addVerifiedBadge(name, !!profile.verified);
+                    addVerifiedBadge(name, !!profile.verified, profile.badge || null);
                 }
 
                 var label = document.createElement("div");
@@ -490,7 +682,7 @@
                     !name.querySelector(".clipfly-verified-badge") &&
                     typeof addVerifiedBadge === "function"
                 ) {
-                    addVerifiedBadge(name, true);
+                    addVerifiedBadge(name, true, info.badge || null);
                 }
             }
 

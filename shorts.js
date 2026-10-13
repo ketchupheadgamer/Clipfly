@@ -138,6 +138,50 @@
 
     /*
      * =========================================
+     * CREATOR INFO (profile picture, badge)
+     * =========================================
+     */
+
+    async function fetchCreatorInfo(ownerIds) {
+        var ids = Array.from(new Set((ownerIds || []).filter(Boolean)));
+        var map = {};
+
+        if (ids.length === 0 || !window.supabaseClient) {
+            return map;
+        }
+
+        try {
+            var result = await window.supabaseClient.rpc(
+                "get_channel_profiles",
+                { p_ids: ids }
+            );
+
+            if (result.error) {
+                throw result.error;
+            }
+
+            (result.data || []).forEach(function (row) {
+                map[row.id] = row;
+            });
+
+        } catch (error) {
+            console.warn("Could not load creator info:", error);
+        }
+
+        // Fallback if the SQL function isn't there.
+        if (Object.keys(map).length === 0 && typeof getProfilesByIds === "function") {
+            try {
+                map = await getProfilesByIds(ids);
+            } catch (error) {
+                map = {};
+            }
+        }
+
+        return map;
+    }
+
+    /*
+     * =========================================
      * COMMENTS WITH REPLIES
      * A reply is a comment whose parent_id points at the comment it
      * answers. Like YouTube, replies sit one level deep.
@@ -951,8 +995,8 @@
             .clipfly-short-user {
                 display: inline-flex;
                 align-items: center;
-                gap: 4px;
-                margin-bottom: 6px;
+                gap: 8px;
+                margin-bottom: 8px;
                 font-size: 16px;
                 font-weight: 800;
                 cursor: pointer;
@@ -962,6 +1006,28 @@
 
             .clipfly-short-user:hover {
                 text-decoration: underline;
+            }
+
+            .clipfly-short-user-avatar {
+                width: 34px;
+                height: 34px;
+                min-width: 34px;
+                border-radius: 50%;
+                overflow: hidden;
+                background: #292930;
+                border: 2px solid rgba(255, 255, 255, 0.75);
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                font-size: 16px;
+                box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+            }
+
+            .clipfly-short-user-avatar img {
+                width: 100%;
+                height: 100%;
+                object-fit: cover;
+                display: block;
             }
 
             .clipfly-short-title {
@@ -1538,19 +1604,12 @@
                 })
             );
 
-            var profiles = {};
-
-            try {
-                if (typeof getProfilesByIds === "function") {
-                    profiles = await getProfilesByIds(
-                        rows.map(function (row) {
-                            return row.owner_id;
-                        })
-                    );
-                }
-            } catch (error) {
-                profiles = {};
-            }
+            // Creator profile pictures + badges.
+            var profiles = await fetchCreatorInfo(
+                rows.map(function (row) {
+                    return row.owner_id;
+                })
+            );
 
             if (s !== state) {
                 return;
@@ -1697,17 +1756,42 @@
         var playIcon = el("div", "clipfly-short-play", "▶");
         var errorBox = el("div", "clipfly-short-error", "This video couldn't be played.");
 
-        // Bottom-left: username + title
+        // Bottom-left: profile picture + username + badge, then the title
         var info = el("div", "clipfly-short-info");
 
         var user = el("div", "clipfly-short-user");
+
+        var userAvatar = el("span", "clipfly-short-user-avatar");
+
+        if (profile && profile.avatar_url) {
+            var avatarImage = document.createElement("img");
+
+            avatarImage.src = profile.avatar_url;
+            avatarImage.alt = "";
+
+            avatarImage.onerror = function () {
+                avatarImage.remove();
+                userAvatar.textContent = "👤";
+            };
+
+            userAvatar.appendChild(avatarImage);
+
+        } else {
+            userAvatar.textContent = "👤";
+        }
+
+        user.appendChild(userAvatar);
 
         user.appendChild(
             document.createTextNode("@" + (video.username || "User"))
         );
 
         if (typeof addVerifiedBadge === "function") {
-            addVerifiedBadge(user, !!(profile && profile.verified));
+            addVerifiedBadge(
+                user,
+                !!(profile && profile.verified),
+                profile ? profile.badge || null : null
+            );
         }
 
         user.addEventListener("click", function (event) {
@@ -1716,7 +1800,7 @@
             if (typeof openUserChannel === "function") {
                 openUserChannel(
                     video.username || "User",
-                    null,
+                    (profile && profile.avatar_url) || null,
                     video.owner_id || null
                 );
             }

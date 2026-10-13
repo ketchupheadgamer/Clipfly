@@ -2,7 +2,10 @@
     "use strict";
 
     /*
-     * Discord-style account switcher.
+     * Account tools inside the profile popup:
+     *  - Discord-style account switcher (saved logins)
+     *  - Switch Badge: choose which owned badge shows next to your name
+     *
      * Saved logins are kept in this browser, so you can switch
      * accounts without typing a password again.
      */
@@ -12,6 +15,7 @@
 
     var activeId = null;
     var busy = false;
+    var badgeBusy = false;
 
     /*
      * =========================================
@@ -497,7 +501,7 @@
             row.appendChild(info);
 
             if (isCurrent) {
-                row.appendChild(el("div", "clipfly-sw-current", "✓ Current"));
+                row.appendChild(el("div", "clipfly-sw-current", "Current"));
 
             } else {
                 var forget = el("button", "clipfly-sw-forget", "✕");
@@ -924,6 +928,430 @@
 
     /*
      * =========================================
+     * SWITCH BADGE
+     * Choose which badge you own is shown next to your name.
+     * =========================================
+     */
+
+    var BADGE_OPTIONS = [
+        { key: "paintbrush", label: "Paintbrush", hint: "Special badge", type: "paintbrush", level: 0 },
+        { key: "verified_plus_plus", label: "Verified++", hint: "Gold", type: "gold", level: 3 },
+        { key: "verified_plus", label: "Verified+", hint: "Silver", type: "silver", level: 2 },
+        { key: "verified", label: "Verified", hint: "Bronze", type: null, level: 1 }
+    ];
+
+    function ensureBadgeWindowStyles() {
+        if (document.getElementById("clipflyBadgeWindowStyles")) {
+            return;
+        }
+
+        var style = document.createElement("style");
+
+        style.id = "clipflyBadgeWindowStyles";
+
+        style.textContent = `
+            .cbd-note {
+                color: #9999a5;
+                line-height: 1.5;
+                margin-bottom: 16px;
+            }
+
+            .cbd-row {
+                display: flex;
+                align-items: center;
+                gap: 12px;
+                padding: 12px;
+                margin-bottom: 8px;
+                border-radius: 12px;
+                background: #101014;
+                border: 2px solid #35353d;
+                cursor: pointer;
+            }
+
+            .cbd-row:hover {
+                border-color: #4b5563;
+            }
+
+            .cbd-row.current {
+                cursor: default;
+                border-color: #3478ff;
+                background: rgba(52, 120, 255, 0.12);
+            }
+
+            .cbd-icon {
+                width: 38px;
+                min-width: 38px;
+                height: 38px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                font-size: 22px;
+            }
+
+            .cbd-icon .clipfly-verified-badge {
+                width: 32px;
+                height: 32px;
+                margin: 0;
+            }
+
+            .cbd-icon .clipfly-verified-badge svg {
+                width: 18px;
+                height: 18px;
+            }
+
+            .cbd-info {
+                flex: 1;
+                min-width: 0;
+            }
+
+            .cbd-label {
+                font-weight: 700;
+            }
+
+            .cbd-hint {
+                font-size: 12px;
+                color: #9999a5;
+            }
+
+            .cbd-chip {
+                font-size: 12px;
+                font-weight: 800;
+                color: #4b8cff;
+                white-space: nowrap;
+            }
+
+            .cbd-status {
+                margin-top: 12px;
+                min-height: 18px;
+                font-size: 14px;
+            }
+        `;
+
+        document.head.appendChild(style);
+    }
+
+    function ensureBadgePopup() {
+        var popup = document.getElementById("clipflyBadgePopup");
+
+        if (popup) {
+            return popup;
+        }
+
+        popup = el("div", "popup");
+
+        popup.id = "clipflyBadgePopup";
+        popup.style.display = "none";
+        popup.style.zIndex = "2100";
+
+        var box = el("div", "popup-box");
+
+        box.style.width = "min(450px, 94vw)";
+
+        var close = el("button", "close-button", "✕");
+
+        close.type = "button";
+        close.addEventListener("click", closeBadgeSwitcher);
+
+        var body = el("div");
+
+        body.id = "clipflyBadgeBody";
+
+        box.appendChild(close);
+        box.appendChild(body);
+        popup.appendChild(box);
+
+        popup.addEventListener("click", function (event) {
+            if (event.target === popup) {
+                closeBadgeSwitcher();
+            }
+        });
+
+        document.body.appendChild(popup);
+
+        return popup;
+    }
+
+    function closeBadgeSwitcher() {
+        var popup = document.getElementById("clipflyBadgePopup");
+
+        if (popup) {
+            popup.style.display = "none";
+        }
+    }
+
+    function ownsBadge(info, option) {
+        if (option.key === "paintbrush") {
+            return !!info.has_paintbrush;
+        }
+
+        return Number(info.earned_level || 0) >= option.level;
+    }
+
+    // Which badge is showing right now.
+    function currentBadgeChoice(info) {
+        if (info.badge === "paintbrush") {
+            return "paintbrush";
+        }
+
+        if (info.badge === "gold") {
+            return "verified_plus_plus";
+        }
+
+        if (info.badge === "silver") {
+            return "verified_plus";
+        }
+
+        if (info.verified) {
+            return "verified";
+        }
+
+        return "none";
+    }
+
+    function applyChoiceToInfo(info, choice) {
+        info.badge =
+            choice === "paintbrush"
+                ? "paintbrush"
+                : choice === "verified_plus"
+                    ? "silver"
+                    : choice === "verified_plus_plus"
+                        ? "gold"
+                        : null;
+
+        info.verified =
+            choice === "none"
+                ? false
+                : choice === "paintbrush"
+                    ? Number(info.earned_level || 0) > 0
+                    : true;
+    }
+
+    function makeBadgeIcon(type) {
+        var holder = el("span", "cbd-icon");
+
+        if (type === "none") {
+            holder.textContent = "🚫";
+            return holder;
+        }
+
+        if (typeof addVerifiedBadge === "function") {
+            // null = the bronze Verified badge
+            addVerifiedBadge(holder, true, type);
+        }
+
+        return holder;
+    }
+
+    function renderBadgeList(info, failure, doneText) {
+        var body = document.getElementById("clipflyBadgeBody");
+
+        if (!body) {
+            return;
+        }
+
+        body.innerHTML = "";
+
+        body.appendChild(el("h2", "", "🏅 Switch badge"));
+
+        if (failure || !info) {
+            body.appendChild(
+                el(
+                    "p",
+                    "cbd-note",
+                    "Couldn't load your badges (did you run the SQL?): " +
+                        (failure || "unknown problem")
+                )
+            );
+
+            return;
+        }
+
+        var owned = BADGE_OPTIONS.filter(function (option) {
+            return ownsBadge(info, option);
+        });
+
+        if (owned.length === 0) {
+            body.appendChild(
+                el(
+                    "p",
+                    "cbd-note",
+                    "You don't own any badges yet. Press Apply at the top of the page to ask for one!"
+                )
+            );
+
+            return;
+        }
+
+        body.appendChild(
+            el(
+                "p",
+                "cbd-note",
+                "Pick the badge that shows next to your name. You can only pick badges you own."
+            )
+        );
+
+        var current = currentBadgeChoice(info);
+
+        var list = el("div");
+
+        owned
+            .concat([
+                { key: "none", label: "No badge", hint: "Hide it for now", type: "none" }
+            ])
+            .forEach(function (option) {
+                var isCurrent = option.key === current;
+
+                var row = el("div", "cbd-row" + (isCurrent ? " current" : ""));
+
+                row.appendChild(makeBadgeIcon(option.type));
+
+                var text = el("div", "cbd-info");
+
+                text.appendChild(el("div", "cbd-label", option.label));
+                text.appendChild(el("div", "cbd-hint", option.hint));
+
+                row.appendChild(text);
+
+                if (isCurrent) {
+                    row.appendChild(el("div", "cbd-chip", "Showing"));
+
+                } else {
+                    row.addEventListener("click", function () {
+                        chooseBadge(info, option.key);
+                    });
+                }
+
+                list.appendChild(row);
+            });
+
+        body.appendChild(list);
+
+        var status = el("div", "cbd-status", doneText || "");
+
+        status.id = "clipflyBadgeStatus";
+        status.style.color = "#4ade80";
+
+        body.appendChild(status);
+    }
+
+    async function openBadgeSwitcher() {
+        ensureStyles();
+        ensureBadgeWindowStyles();
+
+        var popup = ensureBadgePopup();
+        var body = document.getElementById("clipflyBadgeBody");
+
+        body.innerHTML = "";
+
+        body.appendChild(el("h2", "", "🏅 Switch badge"));
+        body.appendChild(el("p", "cbd-note", "Loading..."));
+
+        popup.style.display = "flex";
+
+        var info = null;
+        var failure = null;
+
+        try {
+            var result = await window.supabaseClient.rpc("get_my_badges");
+
+            if (result.error) {
+                throw result.error;
+            }
+
+            var row = (result.data && result.data[0]) || null;
+
+            info = {
+                earned_level: row ? Number(row.earned_level) || 0 : 0,
+                has_paintbrush: row ? !!row.has_paintbrush : false,
+                verified: row ? !!row.verified : false,
+                badge: row ? row.badge || null : null
+            };
+
+        } catch (error) {
+            console.warn("Could not load badges:", error);
+
+            failure = error.message || "Something went wrong.";
+        }
+
+        renderBadgeList(info, failure, "");
+    }
+
+    async function chooseBadge(info, key) {
+        if (badgeBusy) {
+            return;
+        }
+
+        badgeBusy = true;
+
+        var status = document.getElementById("clipflyBadgeStatus");
+
+        if (status) {
+            status.style.color = "#9999a5";
+            status.textContent = "Switching...";
+        }
+
+        try {
+            var result = await window.supabaseClient.rpc("set_my_badge", {
+                p_choice: key
+            });
+
+            if (result.error) {
+                throw result.error;
+            }
+
+            applyChoiceToInfo(info, key);
+
+            renderBadgeList(
+                info,
+                null,
+                key === "none"
+                    ? "Your badge is hidden now."
+                    : "Done! Your badge was switched."
+            );
+
+            refreshAfterBadgeChange();
+
+        } catch (error) {
+            console.warn("Could not switch badge:", error);
+
+            var again = document.getElementById("clipflyBadgeStatus");
+
+            if (again) {
+                again.style.color = "#f87171";
+                again.textContent =
+                    error.message || "Could not switch your badge.";
+            }
+
+        } finally {
+            badgeBusy = false;
+        }
+    }
+
+    // Make the new badge show up on the page right away.
+    function refreshAfterBadgeChange() {
+        try {
+            if (typeof loadProfile === "function") {
+                loadProfile();
+            }
+        } catch (error) {
+            console.warn(error);
+        }
+
+        try {
+            if (typeof openClipflySection === "function") {
+                openClipflySection(
+                    typeof currentClipflySection !== "undefined"
+                        ? currentClipflySection
+                        : "home"
+                );
+            }
+        } catch (error) {
+            console.warn(error);
+        }
+    }
+
+    /*
+     * =========================================
      * BUTTONS INSIDE THE ACCOUNT POPUP
      * =========================================
      */
@@ -951,6 +1379,39 @@
             logout.parentNode.insertBefore(button, logout);
         } else {
             profile.appendChild(button);
+        }
+    }
+
+    function addBadgeButton() {
+        var profile = document.getElementById("profileScreen");
+
+        if (
+            !profile ||
+            document.getElementById("clipflySwitchBadgeButton")
+        ) {
+            return;
+        }
+
+        var button = el("button", "dark-button", "🏅 Switch Badge");
+
+        button.id = "clipflySwitchBadgeButton";
+        button.type = "button";
+
+        button.addEventListener("click", openBadgeSwitcher);
+
+        var anchor = document.getElementById("clipflySwitchAccountButton");
+
+        if (anchor && anchor.parentNode) {
+            anchor.parentNode.insertBefore(button, anchor.nextSibling);
+
+        } else {
+            var logout = profile.querySelector('button[onclick="logOut()"]');
+
+            if (logout && logout.parentNode) {
+                logout.parentNode.insertBefore(button, logout);
+            } else {
+                profile.appendChild(button);
+            }
         }
     }
 
@@ -1019,6 +1480,7 @@
         ensureStyles();
 
         addProfileButton();
+        addBadgeButton();
         updateEntryButtons();
 
         wrap("showLoginScreen", updateEntryButtons);
@@ -1062,6 +1524,7 @@
         window.addEventListener("keydown", function (event) {
             if (event.key === "Escape") {
                 closeSwitcher();
+                closeBadgeSwitcher();
             }
         });
 
@@ -1085,6 +1548,7 @@
     }
 
     window.openAccountSwitcher = openSwitcher;
+    window.openBadgeSwitcher = openBadgeSwitcher;
 
     init();
 

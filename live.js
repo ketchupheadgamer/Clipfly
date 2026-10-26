@@ -3,12 +3,60 @@
 
     /*
      * =========================================
+     * SETTINGS
+     * =========================================
+     */
+
+    // A live card disappears if the streamer hasn't "checked in" for this long.
+    const LIVE_TIMEOUT_MS = 180000;
+    const HEARTBEAT_MS = 20000;
+    const LIVE_REFRESH_MS = 15000;
+    const MAX_VIEWERS = 8;
+    const PEER_PREFIX = "clipfly-live-";
+
+    // Each viewer gets at most this much video (helps far-away viewers).
+    const MAX_VIDEO_BITRATE = 2000000;
+
+    const MIC_KEY = "clipfly_mic_device";
+
+    // Routes used to connect streamers and viewers. If you add your own
+    // relay in the Supabase "app_settings" table, it is used too.
+    const DEFAULT_ICE_SERVERS = [
+        {
+            urls: [
+                "stun:stun.l.google.com:19302",
+                "stun:stun1.l.google.com:19302"
+            ]
+        },
+        { urls: "stun:stun.cloudflare.com:3478" },
+        {
+            urls: [
+                "turn:eu-0.turn.peerjs.com:3478",
+                "turn:us-0.turn.peerjs.com:3478"
+            ],
+            username: "peerjs",
+            credential: "peerjsp"
+        },
+        {
+            urls: [
+                "turn:openrelay.metered.ca:80",
+                "turn:openrelay.metered.ca:443",
+                "turns:openrelay.metered.ca:443?transport=tcp"
+            ],
+            username: "openrelayproject",
+            credential: "openrelayproject"
+        }
+    ];
+
+    /*
+     * =========================================
      * STATE
      * =========================================
      */
 
     // Streamer
-    let liveStream = null;
+    let liveStream = null;        // what viewers receive (video + mixed sound)
+    let displayStream = null;     // the raw screen / tab capture
     let mediaRecorder = null;
     let recordedChunks = [];
     let liveRecordingBlob = null;
@@ -23,8 +71,30 @@
     let heartbeatTimer = null;
     let hostPeer = null;
     let hostChat = null;
+    let hostChatBox = null;
+    let hostChatInput = null;
     let liveNote = "";
     const viewerLinks = new Map();
+
+    // Microphone mixing
+    let audioCtx = null;
+    let mixDest = null;
+    let displayGain = null;
+    let displaySrc = null;
+    let micGain = null;
+    let micSrc = null;
+    let micStream = null;
+    let micOn = false;
+    let micDeviceId = "";
+
+    try {
+        micDeviceId = localStorage.getItem(MIC_KEY) || "";
+    } catch (error) {
+        micDeviceId = "";
+    }
+
+    // Chat pop-out window
+    let popout = null;
 
     // Home tab
     let liveNowTimer = null;
@@ -34,13 +104,7 @@
     let viewerSession = null;
 
     let lastChatAt = 0;
-
-    // A live card disappears if the streamer hasn't "checked in" for this long.
-    const LIVE_TIMEOUT_MS = 180000;
-    const HEARTBEAT_MS = 20000;
-    const LIVE_REFRESH_MS = 15000;
-    const MAX_VIEWERS = 8;
-    const PEER_PREFIX = "clipfly-live-";
+    let iceServersPromise = null;
 
     function $(id) {
         return document.getElementById(id);
@@ -100,6 +164,50 @@
 
     /*
      * =========================================
+     * CONNECTION ROUTES (STUN / TURN)
+     * =========================================
+     */
+
+    function loadIceServers() {
+        if (!iceServersPromise) {
+            iceServersPromise = (async function () {
+                let custom = [];
+
+                try {
+                    if (window.supabaseClient) {
+                        const result = await window.supabaseClient
+                            .from("app_settings")
+                            .select("value")
+                            .eq("key", "ice_servers")
+                            .maybeSingle();
+
+                        if (
+                            !result.error &&
+                            result.data &&
+                            Array.isArray(result.data.value)
+                        ) {
+                            custom = result.data.value.filter(function (server) {
+                                return server && server.urls;
+                            });
+                        }
+                    }
+
+                } catch (error) {
+                    console.warn("Could not load relay settings:", error);
+                }
+
+                return {
+                    servers: custom.concat(DEFAULT_ICE_SERVERS),
+                    hasCustom: custom.length > 0
+                };
+            })();
+        }
+
+        return iceServersPromise;
+    }
+
+    /*
+     * =========================================
      * LIVE CHAT (shared by streamer and viewers)
      * Uses Supabase Realtime broadcast.
      * =========================================
@@ -133,7 +241,15 @@
         container.scrollTop = container.scrollHeight;
     }
 
-    function joinChat(liveId, container) {
+    // getTargets returns every chat box that should show the message
+    // (the normal chat box, plus the pop-out window when it's open).
+    function appendToAll(getTargets, name, text, system) {
+        getTargets().forEach(function (container) {
+            appendChat(container, name, text, system);
+        });
+    }
+
+    function joinChat(liveId, getTargets) {
         const client = window.supabaseClient;
 
         if (!client || typeof client.channel !== "function") {
@@ -152,8 +268,8 @@
                 function (message) {
                     const payload = (message && message.payload) || {};
 
-                    appendChat(
-                        container,
+                    appendToAll(
+                        getTargets,
                         String(payload.name || "User").slice(0, 40),
                         String(payload.text || "").slice(0, 300),
                         false
@@ -183,7 +299,7 @@
         }
     }
 
-    async function sendChatTo(channel, container, input) {
+    async function sendChatTo(channel, getTargets, input) {
         if (!input) {
             return;
         }
@@ -201,8 +317,8 @@
         const user = await getLoggedInUser();
 
         if (!user) {
-            appendChat(
-                container,
+            appendToAll(
+                getTargets,
                 "",
                 "Log in (Account button) to chat.",
                 true
@@ -228,25 +344,39 @@
                 });
 
                 if (result && result !== "ok") {
-                    appendChat(container, name, text, false);
+                    appendToAll(getTargets, name, text, false);
                 }
 
             } catch (error) {
-                appendChat(container, name, text, false);
+                appendToAll(getTargets, name, text, false);
             }
 
         } else {
-            appendChat(container, name, text, false);
+            appendToAll(getTargets, name, text, false);
         }
 
         input.focus();
     }
 
+    function hostChatTargets() {
+        const list = [];
+
+        if (hostChatBox) {
+            list.push(hostChatBox);
+        }
+
+        if (popout && popout.box) {
+            list.push(popout.box);
+        }
+
+        return list;
+    }
+
     function sendLiveChat() {
         sendChatTo(
             hostChat,
-            $("liveChatMessages"),
-            $("liveChatInput")
+            hostChatTargets,
+            hostChatInput || $("liveChatInput")
         );
     }
 
@@ -441,12 +571,520 @@
             throw new Error("Your browser does not support screen sharing.");
         }
 
+        // 1080p / 30 fps keeps the stream light for far-away viewers.
         return await navigator.mediaDevices.getDisplayMedia({
             video: {
-                frameRate: { ideal: 30, max: 60 }
+                width: { ideal: 1920 },
+                height: { ideal: 1080 },
+                frameRate: { ideal: 30, max: 30 }
             },
             audio: true
         });
+    }
+
+    function watchDisplayEnd(display) {
+        const track = display.getVideoTracks()[0];
+
+        if (!track) {
+            return;
+        }
+
+        track.addEventListener("ended", function () {
+            if (displayStream === display) {
+                endLive();
+            }
+        });
+    }
+
+    /*
+     * =========================================
+     * SOUND MIXER (screen sound + microphone)
+     * =========================================
+     */
+
+    // Returns the single mixed sound track that viewers (and the recording)
+    // always get, or null if this browser can't mix sound.
+    function setupMixer(display) {
+        teardownMixer();
+
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+
+        if (!Ctx) {
+            return null;
+        }
+
+        try {
+            audioCtx = new Ctx();
+            mixDest = audioCtx.createMediaStreamDestination();
+
+            displayGain = audioCtx.createGain();
+            displayGain.gain.value = 1;
+            displayGain.connect(mixDest);
+
+            micGain = audioCtx.createGain();
+            micGain.gain.value = 1;
+            micGain.connect(mixDest);
+
+            connectDisplayAudio(display);
+
+            if (audioCtx.state === "suspended") {
+                audioCtx.resume().catch(function () {});
+            }
+
+            return mixDest.stream.getAudioTracks()[0] || null;
+
+        } catch (error) {
+            console.warn("Could not start the sound mixer:", error);
+
+            teardownMixer();
+
+            return null;
+        }
+    }
+
+    function connectDisplayAudio(display) {
+        if (displaySrc) {
+            try {
+                displaySrc.disconnect();
+            } catch (error) {
+                console.warn(error);
+            }
+
+            displaySrc = null;
+        }
+
+        if (!audioCtx || !display) {
+            return;
+        }
+
+        const tracks = display.getAudioTracks();
+
+        if (tracks.length === 0) {
+            return;
+        }
+
+        try {
+            displaySrc = audioCtx.createMediaStreamSource(new MediaStream(tracks));
+            displaySrc.connect(displayGain);
+        } catch (error) {
+            console.warn("Could not connect the shared sound:", error);
+        }
+    }
+
+    function teardownMixer() {
+        [displaySrc, micSrc, displayGain, micGain].forEach(function (node) {
+            if (node) {
+                try {
+                    node.disconnect();
+                } catch (error) {
+                    console.warn(error);
+                }
+            }
+        });
+
+        displaySrc = null;
+        micSrc = null;
+        displayGain = null;
+        micGain = null;
+        mixDest = null;
+
+        if (audioCtx) {
+            try {
+                audioCtx.close();
+            } catch (error) {
+                console.warn(error);
+            }
+
+            audioCtx = null;
+        }
+    }
+
+    /*
+     * =========================================
+     * MICROPHONE
+     * =========================================
+     */
+
+    async function listMicrophones() {
+        if (
+            !navigator.mediaDevices ||
+            !navigator.mediaDevices.enumerateDevices
+        ) {
+            return [];
+        }
+
+        const devices = await navigator.mediaDevices.enumerateDevices();
+
+        return devices.filter(function (device) {
+            return device.kind === "audioinput";
+        });
+    }
+
+    function setMicNote(text, isError) {
+        const note = $("clipflyMicNote");
+
+        if (!note) {
+            return;
+        }
+
+        note.textContent = text || "";
+        note.style.color = isError ? "#f87171" : "#9999a5";
+    }
+
+    function updateMicUI() {
+        const toggle = $("clipflyMicToggle");
+
+        if (toggle) {
+            toggle.textContent = micOn
+                ? "🎤 Mic is ON (click to turn off)"
+                : "🔇 Mic is OFF (click to turn on)";
+
+            toggle.className = micOn ? "blue-button" : "dark-button";
+        }
+
+        const barButton = $("clipflyBarMic");
+
+        if (barButton) {
+            barButton.textContent = micOn ? "🎤 Mic on" : "🔇 Mic off";
+        }
+
+        updateLiveStatus();
+    }
+
+    async function refreshMicDevices() {
+        const select = $("clipflyMicSelect");
+
+        if (!select) {
+            return;
+        }
+
+        let devices = [];
+
+        try {
+            devices = await listMicrophones();
+        } catch (error) {
+            console.warn("Could not list microphones:", error);
+        }
+
+        select.innerHTML = "";
+
+        if (devices.length === 0) {
+            const option = document.createElement("option");
+
+            option.value = "";
+            option.textContent = "Default microphone";
+
+            select.appendChild(option);
+
+            return;
+        }
+
+        devices.forEach(function (device, index) {
+            const option = document.createElement("option");
+
+            option.value = device.deviceId;
+            option.textContent = device.label || "Microphone " + (index + 1);
+
+            select.appendChild(option);
+        });
+
+        if (
+            micDeviceId &&
+            devices.some(function (device) {
+                return device.deviceId === micDeviceId;
+            })
+        ) {
+            select.value = micDeviceId;
+        }
+    }
+
+    function stopMicStream() {
+        if (micSrc) {
+            try {
+                micSrc.disconnect();
+            } catch (error) {
+                console.warn(error);
+            }
+
+            micSrc = null;
+        }
+
+        if (micStream) {
+            micStream.getTracks().forEach(function (track) {
+                track.stop();
+            });
+
+            micStream = null;
+        }
+    }
+
+    function handleMicError(error) {
+        console.warn("Microphone problem:", error);
+
+        stopMicStream();
+
+        micOn = false;
+
+        updateMicUI();
+
+        let text =
+            (error && error.message) || "Could not start the microphone.";
+
+        if (
+            error &&
+            (error.name === "NotAllowedError" || error.name === "SecurityError")
+        ) {
+            text =
+                "Your browser blocked the microphone. Click the lock icon in the address bar and allow the microphone for Clipfly.";
+
+        } else if (error && error.name === "NotFoundError") {
+            text = "No microphone was found. Plug one in and try again.";
+
+        } else if (error && error.name === "NotReadableError") {
+            text =
+                "Another app is using that microphone. Close it, or pick a different microphone.";
+        }
+
+        setMicNote(text, true);
+    }
+
+    async function enableMic() {
+        if (!audioCtx || !micGain || !liveStream) {
+            throw new Error("Microphone can only be used while you're live.");
+        }
+
+        if (audioCtx.state === "suspended") {
+            await audioCtx.resume();
+        }
+
+        stopMicStream();
+
+        const audio = {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true
+        };
+
+        if (micDeviceId) {
+            audio.deviceId = { exact: micDeviceId };
+        }
+
+        let stream;
+
+        try {
+            stream = await navigator.mediaDevices.getUserMedia({ audio: audio });
+
+        } catch (error) {
+            // The remembered microphone may be unplugged: use the default.
+            if (
+                micDeviceId &&
+                error &&
+                (error.name === "OverconstrainedError" ||
+                    error.name === "NotFoundError")
+            ) {
+                micDeviceId = "";
+
+                delete audio.deviceId;
+
+                stream = await navigator.mediaDevices.getUserMedia({ audio: audio });
+
+            } else {
+                throw error;
+            }
+        }
+
+        micStream = stream;
+
+        micSrc = audioCtx.createMediaStreamSource(stream);
+        micSrc.connect(micGain);
+
+        micOn = true;
+
+        const track = stream.getAudioTracks()[0];
+
+        if (track) {
+            const settings = track.getSettings ? track.getSettings() : null;
+
+            if (settings && settings.deviceId) {
+                micDeviceId = settings.deviceId;
+
+                try {
+                    localStorage.setItem(MIC_KEY, micDeviceId);
+                } catch (error) {
+                    console.warn(error);
+                }
+            }
+
+            track.addEventListener("ended", function () {
+                if (micStream === stream) {
+                    stopMicStream();
+
+                    micOn = false;
+
+                    updateMicUI();
+
+                    setMicNote("Your microphone was disconnected.", true);
+                }
+            });
+        }
+
+        updateMicUI();
+    }
+
+    function disableMic() {
+        stopMicStream();
+
+        micOn = false;
+
+        updateMicUI();
+    }
+
+    async function toggleMic() {
+        if (!liveStream) {
+            return;
+        }
+
+        if (!audioCtx) {
+            setMicNote("This browser can't add a microphone to a stream.", true);
+            return;
+        }
+
+        try {
+            if (micOn) {
+                disableMic();
+
+                setMicNote("Mic is off. Viewers can't hear you.", false);
+
+            } else {
+                await enableMic();
+
+                await refreshMicDevices();
+
+                setMicNote("Mic is on. Viewers can hear you.", false);
+            }
+
+        } catch (error) {
+            handleMicError(error);
+        }
+    }
+
+    async function onMicSelectChange() {
+        const select = $("clipflyMicSelect");
+
+        if (!select) {
+            return;
+        }
+
+        micDeviceId = select.value || "";
+
+        try {
+            localStorage.setItem(MIC_KEY, micDeviceId);
+        } catch (error) {
+            console.warn(error);
+        }
+
+        if (micOn) {
+            try {
+                await enableMic();
+
+                setMicNote("Switched microphone.", false);
+
+            } catch (error) {
+                handleMicError(error);
+            }
+
+        } else {
+            setMicNote("Microphone chosen. Turn the mic on to use it.", false);
+        }
+    }
+
+    // Adds the microphone controls to the "Change Live" window.
+    function enhanceChangeLivePopup() {
+        const popup = $("changeLivePopup");
+
+        if (!popup || $("clipflyMicBox")) {
+            return;
+        }
+
+        const saveButton = popup.querySelector(
+            'button[onclick="saveLiveChanges()"]'
+        );
+
+        if (!saveButton || !saveButton.parentNode) {
+            return;
+        }
+
+        const box = document.createElement("div");
+
+        box.id = "clipflyMicBox";
+        box.style.padding = "12px";
+        box.style.borderRadius = "12px";
+        box.style.background = "#101014";
+        box.style.border = "1px solid #35353d";
+
+        const heading = document.createElement("div");
+
+        heading.textContent = "🎤 Microphone";
+        heading.style.fontWeight = "700";
+        heading.style.marginBottom = "10px";
+
+        const row = document.createElement("div");
+
+        row.style.display = "flex";
+        row.style.flexWrap = "wrap";
+        row.style.alignItems = "center";
+        row.style.gap = "10px";
+
+        const toggle = document.createElement("button");
+
+        toggle.id = "clipflyMicToggle";
+        toggle.type = "button";
+        toggle.className = "dark-button";
+        toggle.textContent = "🔇 Mic is OFF (click to turn on)";
+
+        toggle.addEventListener("click", toggleMic);
+
+        const select = document.createElement("select");
+
+        select.id = "clipflyMicSelect";
+        select.style.flex = "1";
+        select.style.minWidth = "180px";
+        select.style.padding = "11px 12px";
+        select.style.borderRadius = "10px";
+        select.style.border = "1px solid #35353d";
+        select.style.background = "#18181f";
+        select.style.color = "#ffffff";
+        select.style.outline = "none";
+
+        select.addEventListener("change", onMicSelectChange);
+
+        const note = document.createElement("div");
+
+        note.id = "clipflyMicNote";
+        note.style.marginTop = "10px";
+        note.style.fontSize = "13px";
+        note.style.color = "#9999a5";
+        note.style.lineHeight = "1.4";
+        note.textContent =
+            "Turn your mic on so viewers can hear you. It starts off.";
+
+        row.appendChild(toggle);
+        row.appendChild(select);
+
+        box.appendChild(heading);
+        box.appendChild(row);
+        box.appendChild(note);
+
+        saveButton.parentNode.insertBefore(box, saveButton);
+
+        if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
+            navigator.mediaDevices.addEventListener(
+                "devicechange",
+                refreshMicDevices
+            );
+        }
+
+        updateMicUI();
     }
 
     /*
@@ -637,17 +1275,26 @@
      */
 
     function updateLiveStatus() {
-        const el = $("liveStatus");
-
-        if (!el) {
-            return;
-        }
-
-        el.textContent =
+        const text =
             (liveNote || "🔴 You are live.") +
             "   👀 " +
             viewerLinks.size +
-            " watching";
+            " watching   " +
+            (micOn ? "🎤 Mic on" : "🔇 Mic off");
+
+        const el = $("liveStatus");
+
+        if (el) {
+            el.textContent = text;
+        }
+
+        if (popout && popout.status) {
+            popout.status.textContent =
+                "👀 " +
+                viewerLinks.size +
+                " watching   " +
+                (micOn ? "🎤 Mic on" : "🔇 Mic off");
+        }
     }
 
     function sendToViewers(message) {
@@ -677,7 +1324,65 @@
             console.warn(error);
         }
 
+        try {
+            if (link.conn) {
+                link.conn.close();
+            }
+        } catch (error) {
+            console.warn(error);
+        }
+
         updateLiveStatus();
+    }
+
+    // Caps the video bitrate so far-away viewers can keep up.
+    function tuneVideoSender(pc) {
+        try {
+            pc.getSenders().forEach(function (sender) {
+                if (!sender.track || sender.track.kind !== "video") {
+                    return;
+                }
+
+                const parameters = sender.getParameters();
+
+                if (!parameters.encodings || parameters.encodings.length === 0) {
+                    parameters.encodings = [{}];
+                }
+
+                parameters.encodings[0].maxBitrate = MAX_VIDEO_BITRATE;
+                parameters.encodings[0].maxFramerate = 30;
+
+                sender.setParameters(parameters).catch(function (error) {
+                    console.warn("Could not tune the video:", error);
+                });
+            });
+
+        } catch (error) {
+            console.warn("Could not tune the video:", error);
+        }
+    }
+
+    function watchHostCall(peerId, call) {
+        const pc = call && call.peerConnection;
+
+        if (!pc) {
+            return;
+        }
+
+        let tuned = false;
+
+        pc.addEventListener("iceconnectionstatechange", function () {
+            const state = pc.iceConnectionState;
+
+            if ((state === "connected" || state === "completed") && !tuned) {
+                tuned = true;
+                tuneVideoSender(pc);
+            }
+
+            if (state === "failed") {
+                removeViewer(peerId);
+            }
+        });
     }
 
     function onViewerConnection(conn) {
@@ -722,6 +1427,8 @@
 
             viewerLinks.set(conn.peer, { conn: conn, call: call });
 
+            watchHostCall(conn.peer, call);
+
             try {
                 conn.send({ type: "info", title: liveTitle });
             } catch (error) {
@@ -740,13 +1447,14 @@
         });
     }
 
-    function startBroadcasting() {
-        return new Promise(function (resolve) {
-            if (typeof Peer === "undefined") {
-                resolve("the live video library (PeerJS) did not load.");
-                return;
-            }
+    async function startBroadcasting() {
+        if (typeof Peer === "undefined") {
+            return "the live video library (PeerJS) did not load.";
+        }
 
+        const ice = await loadIceServers();
+
+        return new Promise(function (resolve) {
             let settled = false;
 
             function finish(message) {
@@ -759,7 +1467,12 @@
             }
 
             try {
-                const peer = new Peer(PEER_PREFIX + liveRowId);
+                const peer = new Peer(PEER_PREFIX + liveRowId, {
+                    config: {
+                        iceServers: ice.servers,
+                        iceCandidatePoolSize: 2
+                    }
+                });
 
                 hostPeer = peer;
 
@@ -789,7 +1502,7 @@
                 });
 
                 setTimeout(function () {
-                    finish("timed out reaching the video relay.");
+                    finish("timed out reaching the connection service.");
                 }, 10000);
 
             } catch (error) {
@@ -856,6 +1569,37 @@
 
     /*
      * =========================================
+     * STOP EVERYTHING THE STREAM USES
+     * =========================================
+     */
+
+    function teardownLiveMedia() {
+        stopMicStream();
+
+        micOn = false;
+
+        [liveStream, displayStream].forEach(function (stream) {
+            if (stream) {
+                try {
+                    stream.getTracks().forEach(function (track) {
+                        track.stop();
+                    });
+                } catch (error) {
+                    console.warn(error);
+                }
+            }
+        });
+
+        liveStream = null;
+        displayStream = null;
+
+        teardownMixer();
+
+        updateMicUI();
+    }
+
+    /*
+     * =========================================
      * START LIVE
      * =========================================
      */
@@ -893,10 +1637,23 @@
                 status.textContent = "Choose your screen or browser tab...";
             }
 
-            const stream = await getDisplayStream();
+            const display = await getDisplayStream();
 
-            liveStream = stream;
+            displayStream = display;
             liveTitle = title;
+
+            // Viewers always get one video track + one mixed sound track
+            // (shared sound + microphone), so the mic can be switched on
+            // later without reconnecting anyone.
+            const mixTrack = setupMixer(display);
+            const videoTrack = display.getVideoTracks()[0];
+
+            const out =
+                mixTrack && videoTrack
+                    ? new MediaStream([videoTrack, mixTrack])
+                    : display;
+
+            liveStream = out;
 
             const video = $("livePreviewVideo");
 
@@ -908,22 +1665,14 @@
 
             liveVideo = video;
 
-            video.srcObject = stream;
+            video.srcObject = out;
             video.muted = true;
 
             await video.play();
 
-            startRecorder(stream);
+            startRecorder(out);
 
-            const videoTrack = stream.getVideoTracks()[0];
-
-            if (videoTrack) {
-                videoTrack.addEventListener("ended", function () {
-                    if (liveStream === stream) {
-                        endLive();
-                    }
-                });
-            }
+            watchDisplayEnd(display);
 
             closeLiveSetup();
 
@@ -945,12 +1694,17 @@
                 liveBar.style.display = "flex";
             }
 
-            const chatBox = $("liveChatMessages");
-
-            if (chatBox) {
-                chatBox.innerHTML = "";
-                appendChat(chatBox, "", "Live chat started!", true);
+            if (hostChatBox) {
+                hostChatBox.innerHTML = "";
+                appendChat(hostChatBox, "", "Live chat started!", true);
             }
+
+            micOn = false;
+
+            setMicNote(
+                "Turn your mic on so viewers can hear you. It starts off.",
+                false
+            );
 
             /*
              * Put the livestream on Home, then open it to viewers.
@@ -975,26 +1729,24 @@
                         castError;
                 }
 
-                hostChat = joinChat(liveRowId, chatBox);
+                hostChat = joinChat(liveRowId, hostChatTargets);
             }
 
-            updateLiveStatus();
+            updateMicUI();
             refreshLiveNow();
 
         } catch (error) {
             console.error("Clipfly Live error:", error);
 
-            if (liveStream) {
+            if (mediaRecorder && mediaRecorder.state !== "inactive") {
                 try {
-                    liveStream.getTracks().forEach(function (track) {
-                        track.stop();
-                    });
+                    mediaRecorder.stop();
                 } catch (stopError) {
                     console.warn(stopError);
                 }
-
-                liveStream = null;
             }
+
+            teardownLiveMedia();
 
             if (status) {
                 status.textContent =
@@ -1053,6 +1805,9 @@
             titleInput.value = liveTitle;
         }
 
+        refreshMicDevices();
+        updateMicUI();
+
         popup.style.display = "flex";
     }
 
@@ -1076,10 +1831,26 @@
                 return;
             }
 
-            const newStream = await getDisplayStream();
-            const oldStream = liveStream;
+            const newDisplay = await getDisplayStream();
+            const oldDisplay = displayStream;
 
-            liveStream = newStream;
+            displayStream = newDisplay;
+
+            // New shared sound goes into the same mixer, so the mic and the
+            // viewers' sound connection keep working.
+            connectDisplayAudio(newDisplay);
+
+            const newVideo = newDisplay.getVideoTracks()[0];
+
+            const mixTrack =
+                mixDest && mixDest.stream
+                    ? mixDest.stream.getAudioTracks()[0]
+                    : null;
+
+            const newOut =
+                mixTrack && newVideo
+                    ? new MediaStream([newVideo, mixTrack])
+                    : newDisplay;
 
             if (mediaRecorder && mediaRecorder.state !== "inactive") {
                 mediaRecorder.stop();
@@ -1089,31 +1860,26 @@
                 });
             }
 
-            if (oldStream) {
-                oldStream.getTracks().forEach(function (track) {
+            liveStream = newOut;
+
+            // Stop the old capture (the mixed sound track is NOT part of it).
+            if (oldDisplay) {
+                oldDisplay.getTracks().forEach(function (track) {
                     track.stop();
                 });
             }
 
             if (liveVideo) {
-                liveVideo.srcObject = newStream;
+                liveVideo.srcObject = newOut;
                 await liveVideo.play();
             }
 
             // Viewers keep watching, now with the new screen.
-            swapTracksOnViewers(newStream);
+            swapTracksOnViewers(newOut);
 
-            startRecorder(newStream);
+            startRecorder(newOut);
 
-            const track = newStream.getVideoTracks()[0];
-
-            if (track) {
-                track.addEventListener("ended", function () {
-                    if (liveStream === newStream) {
-                        endLive();
-                    }
-                });
-            }
+            watchDisplayEnd(newDisplay);
 
         } catch (error) {
             console.error("Could not change live source:", error);
@@ -1230,11 +1996,7 @@
                 });
             }
 
-            liveStream.getTracks().forEach(function (track) {
-                track.stop();
-            });
-
-            liveStream = null;
+            teardownLiveMedia();
 
             if (liveVideo) {
                 liveVideo.srcObject = null;
@@ -1246,7 +2008,10 @@
                 liveBar.style.display = "none";
             }
 
+            closeChatPopout();
+
             closeLiveWindow();
+            closeChangeLive();
 
             // Tell viewers it's over, then take the stream off Home.
             stopBroadcasting();
@@ -1407,6 +2172,327 @@
 
     /*
      * =========================================
+     * CHAT POP-OUT (floating chat window)
+     * =========================================
+     */
+
+    function updatePopoutButton() {
+        const button = $("clipflyChatPopoutButton");
+
+        if (button) {
+            button.textContent = popout ? "↙ Pop in" : "↗ Pop out";
+        }
+    }
+
+    function closeChatPopout() {
+        const current = popout;
+
+        popout = null;
+
+        updatePopoutButton();
+
+        if (current && current.win) {
+            try {
+                current.win.close();
+            } catch (error) {
+                console.warn(error);
+            }
+        }
+    }
+
+    function buildPopoutUI(win) {
+        const doc = win.document;
+
+        doc.title = "Clipfly live chat";
+
+        const style = doc.createElement("style");
+
+        style.textContent = `
+            html, body {
+                margin: 0;
+                height: 100%;
+            }
+
+            body {
+                background: #101014;
+                color: #ffffff;
+                font-family: Arial, Helvetica, sans-serif;
+                display: flex;
+                flex-direction: column;
+            }
+
+            .head {
+                padding: 10px 12px;
+                background: #18181f;
+                border-bottom: 1px solid #30303a;
+            }
+
+            .head strong {
+                display: block;
+                font-size: 15px;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+            }
+
+            .head span {
+                font-size: 12px;
+                color: #9999a5;
+            }
+
+            .msgs {
+                flex: 1;
+                overflow-y: auto;
+                padding: 12px;
+                font-size: 14px;
+                line-height: 1.4;
+            }
+
+            .row {
+                display: flex;
+                gap: 8px;
+                padding: 10px;
+                background: #18181f;
+                border-top: 1px solid #30303a;
+            }
+
+            .row input {
+                flex: 1;
+                min-width: 0;
+                padding: 10px 12px;
+                border-radius: 10px;
+                border: 1px solid #35353d;
+                background: #101014;
+                color: #ffffff;
+                outline: none;
+                font-size: 14px;
+            }
+
+            .row input:focus {
+                border-color: #3478ff;
+            }
+
+            .row button {
+                border: none;
+                border-radius: 10px;
+                padding: 0 16px;
+                background: #3478ff;
+                color: #ffffff;
+                font-weight: 700;
+                cursor: pointer;
+            }
+        `;
+
+        doc.head.appendChild(style);
+
+        doc.body.innerHTML = "";
+
+        const head = doc.createElement("div");
+
+        head.className = "head";
+
+        const title = doc.createElement("strong");
+
+        title.textContent = "💬 " + (liveTitle || "Live chat");
+
+        const status = doc.createElement("span");
+
+        head.appendChild(title);
+        head.appendChild(status);
+
+        const box = doc.createElement("div");
+
+        box.className = "msgs";
+
+        const row = doc.createElement("div");
+
+        row.className = "row";
+
+        const input = doc.createElement("input");
+
+        input.type = "text";
+        input.maxLength = 300;
+        input.placeholder = "Say something...";
+
+        const send = doc.createElement("button");
+
+        send.type = "button";
+        send.textContent = "Send";
+
+        row.appendChild(input);
+        row.appendChild(send);
+
+        doc.body.appendChild(head);
+        doc.body.appendChild(box);
+        doc.body.appendChild(row);
+
+        // Copy the messages so far.
+        if (hostChatBox) {
+            Array.from(hostChatBox.children).forEach(function (node) {
+                box.appendChild(node.cloneNode(true));
+            });
+
+            box.scrollTop = box.scrollHeight;
+        }
+
+        function submit() {
+            sendChatTo(hostChat, hostChatTargets, input);
+        }
+
+        send.addEventListener("click", submit);
+
+        input.addEventListener("keydown", function (event) {
+            if (event.key === "Enter") {
+                event.preventDefault();
+                submit();
+            }
+        });
+
+        win.addEventListener("pagehide", function () {
+            if (popout && popout.win === win) {
+                popout = null;
+
+                updatePopoutButton();
+            }
+        });
+
+        popout = { win: win, box: box, input: input, status: status };
+
+        updatePopoutButton();
+        updateLiveStatus();
+
+        try {
+            input.focus();
+        } catch (error) {
+            console.warn(error);
+        }
+    }
+
+    async function openChatPopout() {
+        if (!liveStream) {
+            return;
+        }
+
+        if (popout && popout.win && !popout.win.closed) {
+            try {
+                popout.win.focus();
+            } catch (error) {
+                console.warn(error);
+            }
+
+            return;
+        }
+
+        let win = null;
+
+        // Chrome / Edge: a small always-on-top window, like Edge pop-outs.
+        if (
+            window.documentPictureInPicture &&
+            typeof window.documentPictureInPicture.requestWindow === "function"
+        ) {
+            try {
+                win = await window.documentPictureInPicture.requestWindow({
+                    width: 380,
+                    height: 560
+                });
+
+            } catch (error) {
+                console.warn("Pop-out window failed, using a normal window:", error);
+
+                win = null;
+            }
+        }
+
+        // Other browsers: a normal small window.
+        if (!win) {
+            win = window.open(
+                "",
+                "clipflyLiveChat",
+                "popup=yes,width=380,height=560"
+            );
+
+            if (!win) {
+                notify(
+                    "Pop-out blocked",
+                    "Your browser blocked the pop-out window. Allow pop-ups for Clipfly and try again.",
+                    "⚠️"
+                );
+
+                return;
+            }
+
+            win.document.open();
+
+            win.document.write(
+                "<!doctype html><html><head><meta charset='utf-8'><title>Clipfly live chat</title></head><body></body></html>"
+            );
+
+            win.document.close();
+        }
+
+        buildPopoutUI(win);
+    }
+
+    function togglePopout() {
+        if (popout) {
+            closeChatPopout();
+        } else {
+            openChatPopout();
+        }
+    }
+
+    // Adds the "Pop out" bar above the streamer's chat.
+    function enhanceHostChatPanel() {
+        const messages = $("liveChatMessages");
+
+        if (!messages) {
+            return;
+        }
+
+        hostChatBox = messages;
+        hostChatInput = $("liveChatInput");
+
+        const panel = messages.parentNode;
+
+        if (!panel || $("clipflyChatHeader")) {
+            return;
+        }
+
+        const header = document.createElement("div");
+
+        header.id = "clipflyChatHeader";
+        header.style.display = "flex";
+        header.style.alignItems = "center";
+        header.style.justifyContent = "space-between";
+        header.style.gap = "10px";
+        header.style.padding = "8px 12px";
+        header.style.background = "#18181f";
+        header.style.borderBottom = "1px solid #30303a";
+
+        const title = document.createElement("strong");
+
+        title.textContent = "💬 Live chat";
+
+        const button = document.createElement("button");
+
+        button.id = "clipflyChatPopoutButton";
+        button.type = "button";
+        button.className = "dark-button";
+        button.textContent = "↗ Pop out";
+        button.title = "Float your chat over other windows";
+        button.style.padding = "6px 12px";
+        button.style.fontSize = "13px";
+
+        button.addEventListener("click", togglePopout);
+
+        header.appendChild(title);
+        header.appendChild(button);
+
+        panel.insertBefore(header, panel.firstChild);
+    }
+
+    /*
+     * =========================================
      * LIVE BAR
      * =========================================
      */
@@ -1430,6 +2516,15 @@
             "></span>
 
             <strong>LIVE</strong>
+
+            <button
+                id="clipflyBarMic"
+                type="button"
+                class="dark-button"
+                onclick="window.clipflyToggleMic()"
+            >
+                🔇 Mic off
+            </button>
 
             <button
                 type="button"
@@ -1478,6 +2573,14 @@
         }
     }
 
+    function showViewerRetry(show) {
+        const button = $("clipflyViewerRetry");
+
+        if (button) {
+            button.style.display = show ? "inline-block" : "none";
+        }
+    }
+
     function ensureViewerUI() {
         let popup = $("clipflyLiveViewerPopup");
 
@@ -1513,6 +2616,13 @@
                     style="margin-top:12px;padding:12px;border-radius:10px;background:#101014;color:#aaa;"
                 >Connecting...</div>
 
+                <button
+                    class="dark-button"
+                    type="button"
+                    id="clipflyViewerRetry"
+                    style="display:none;margin-top:10px;"
+                >🔁 Try again</button>
+
                 <div style="margin-top:18px;border:1px solid #30303a;border-radius:12px;overflow:hidden;">
 
                     <div
@@ -1541,6 +2651,12 @@
 
         document.body.appendChild(popup);
 
+        function viewerChatTargets() {
+            const box = $("clipflyViewerChat");
+
+            return box ? [box] : [];
+        }
+
         function sendViewerChat() {
             const session = viewerSession;
 
@@ -1550,13 +2666,19 @@
 
             sendChatTo(
                 session.chat,
-                $("clipflyViewerChat"),
+                viewerChatTargets,
                 $("clipflyViewerChatInput")
             );
         }
 
         $("clipflyViewerClose").addEventListener("click", closeViewer);
         $("clipflyViewerChatSend").addEventListener("click", sendViewerChat);
+
+        $("clipflyViewerRetry").addEventListener("click", function () {
+            if (viewerSession && viewerSession.stream) {
+                watchLive(viewerSession.stream);
+            }
+        });
 
         $("clipflyViewerChatInput").addEventListener("keydown", function (event) {
             if (event.key === "Enter") {
@@ -1574,42 +2696,43 @@
         return popup;
     }
 
+    function cleanupViewerTransport(session) {
+        if (session.timer) {
+            clearTimeout(session.timer);
+            session.timer = null;
+        }
+
+        [
+            ["call", "close"],
+            ["conn", "close"],
+            ["peer", "destroy"]
+        ].forEach(function (pair) {
+            const item = session[pair[0]];
+
+            if (item) {
+                try {
+                    item[pair[1]]();
+                } catch (error) {
+                    console.warn(error);
+                }
+            }
+
+            session[pair[0]] = null;
+        });
+    }
+
     function closeViewer() {
         const session = viewerSession;
 
         viewerSession = null;
 
         if (session) {
-            if (session.timer) {
-                clearTimeout(session.timer);
-            }
-
-            try {
-                if (session.call) {
-                    session.call.close();
-                }
-            } catch (error) {
-                console.warn(error);
-            }
-
-            try {
-                if (session.conn) {
-                    session.conn.close();
-                }
-            } catch (error) {
-                console.warn(error);
-            }
-
-            try {
-                if (session.peer) {
-                    session.peer.destroy();
-                }
-            } catch (error) {
-                console.warn(error);
-            }
+            cleanupViewerTransport(session);
 
             leaveChat(session.chat);
         }
+
+        showViewerRetry(false);
 
         const video = $("clipflyViewerVideo");
 
@@ -1633,6 +2756,13 @@
         }
 
         session.gotVideo = true;
+
+        if (session.timer) {
+            clearTimeout(session.timer);
+            session.timer = null;
+        }
+
+        showViewerRetry(false);
 
         if (video.srcObject !== remote) {
             video.srcObject = remote;
@@ -1662,6 +2792,11 @@
 
         session.ended = true;
 
+        if (session.timer) {
+            clearTimeout(session.timer);
+            session.timer = null;
+        }
+
         setViewerStatus(message || "This livestream has ended.");
 
         const video = $("clipflyViewerVideo");
@@ -1671,7 +2806,192 @@
         }
     }
 
-    function watchLive(stream) {
+    function onViewerTimeout(session, ice) {
+        if (viewerSession !== session || session.gotVideo || session.ended) {
+            return;
+        }
+
+        if (session.attempt === 0) {
+            // First try failed: connect again on a different route.
+            session.attempt = 1;
+            session.relayOnly = !!(ice && ice.hasCustom);
+
+            setViewerStatus(
+                session.relayOnly
+                    ? "Still connecting... trying a relay route."
+                    : "Still connecting... trying again."
+            );
+
+            connectViewer(session);
+
+            return;
+        }
+
+        setViewerStatus(
+            "Couldn't connect to this stream. The streamer's network or yours may be blocking live video."
+        );
+
+        showViewerRetry(true);
+    }
+
+    async function connectViewer(session) {
+        cleanupViewerTransport(session);
+
+        const ice = await loadIceServers();
+
+        if (viewerSession !== session) {
+            return;
+        }
+
+        let peer;
+
+        try {
+            const config = {
+                iceServers: ice.servers,
+                iceCandidatePoolSize: 2
+            };
+
+            if (session.relayOnly) {
+                config.iceTransportPolicy = "relay";
+            }
+
+            peer = new Peer({ config: config });
+
+        } catch (error) {
+            setViewerStatus("Could not start the video connection.");
+            showViewerRetry(true);
+            return;
+        }
+
+        session.peer = peer;
+
+        peer.on("open", function () {
+            if (viewerSession !== session || session.peer !== peer) {
+                return;
+            }
+
+            const conn = peer.connect(
+                PEER_PREFIX + session.id,
+                { reliable: true }
+            );
+
+            session.conn = conn;
+
+            conn.on("open", function () {
+                if (viewerSession === session && !session.gotVideo) {
+                    setViewerStatus("Connected. Waiting for video...");
+                }
+            });
+
+            conn.on("data", function (data) {
+                if (viewerSession !== session || !data) {
+                    return;
+                }
+
+                if (data.type === "ended") {
+                    viewerEnded(session, "This livestream has ended.");
+
+                } else if (data.type === "full") {
+                    viewerEnded(
+                        session,
+                        "This stream is full right now. Try again in a bit."
+                    );
+
+                    showViewerRetry(true);
+
+                } else if (data.type === "info" && data.title) {
+                    $("clipflyViewerTitle").textContent =
+                        "🔴 " + String(data.title).slice(0, 120);
+                }
+            });
+
+            conn.on("close", function () {
+                if (
+                    viewerSession === session &&
+                    session.conn === conn &&
+                    session.gotVideo
+                ) {
+                    viewerEnded(session, "This livestream has ended.");
+                }
+            });
+
+            conn.on("error", function (error) {
+                console.warn("Viewer connection error:", error);
+            });
+        });
+
+        peer.on("call", function (call) {
+            if (viewerSession !== session || session.peer !== peer) {
+                try {
+                    call.close();
+                } catch (error) {
+                    console.warn(error);
+                }
+
+                return;
+            }
+
+            session.call = call;
+
+            call.answer();
+
+            call.on("stream", function (remote) {
+                if (viewerSession === session) {
+                    attachViewerStream(session, remote);
+                }
+            });
+
+            call.on("close", function () {
+                if (
+                    viewerSession === session &&
+                    session.call === call &&
+                    session.gotVideo
+                ) {
+                    viewerEnded(session, "This livestream has ended.");
+                }
+            });
+        });
+
+        peer.on("error", function (error) {
+            if (viewerSession !== session || session.peer !== peer) {
+                return;
+            }
+
+            const type = error && error.type;
+
+            if (type === "peer-unavailable") {
+                setViewerStatus(
+                    "This stream isn't reachable. The streamer may have just ended it."
+                );
+
+                showViewerRetry(true);
+
+            } else if (
+                type === "network" ||
+                type === "server-error" ||
+                type === "socket-error" ||
+                type === "socket-closed"
+            ) {
+                setViewerStatus(
+                    "Couldn't reach the connection service. Check your internet, or try a different network."
+                );
+
+                showViewerRetry(true);
+
+            } else {
+                setViewerStatus(
+                    "Connection problem: " +
+                    ((error && (error.message || error.type)) || "unknown")
+                );
+            }
+        });
+
+        session.timer = setTimeout(function () {
+            onViewerTimeout(session, ice);
+        }, 15000);
+    }
+
+    async function watchLive(stream) {
         if (!stream || !stream.id) {
             return;
         }
@@ -1707,138 +3027,35 @@
         video.muted = false;
         video.srcObject = null;
 
+        showViewerRetry(false);
+
         setViewerStatus("Connecting to the stream...");
 
         popup.style.display = "flex";
 
         const session = {
             id: stream.id,
+            stream: stream,
             peer: null,
             conn: null,
             call: null,
             chat: null,
             timer: null,
             gotVideo: false,
-            ended: false
+            ended: false,
+            attempt: 0,
+            relayOnly: false
         };
 
         viewerSession = session;
 
-        session.chat = joinChat(stream.id, chatBox);
+        session.chat = joinChat(stream.id, function () {
+            const box = $("clipflyViewerChat");
 
-        let peer;
-
-        try {
-            peer = new Peer();
-        } catch (error) {
-            setViewerStatus("Could not start the video connection.");
-            return;
-        }
-
-        session.peer = peer;
-
-        peer.on("open", function () {
-            if (viewerSession !== session) {
-                return;
-            }
-
-            const conn = peer.connect(
-                PEER_PREFIX + stream.id,
-                { reliable: true }
-            );
-
-            session.conn = conn;
-
-            conn.on("open", function () {
-                if (viewerSession === session && !session.gotVideo) {
-                    setViewerStatus("Connected. Waiting for video...");
-                }
-            });
-
-            conn.on("data", function (data) {
-                if (viewerSession !== session || !data) {
-                    return;
-                }
-
-                if (data.type === "ended") {
-                    viewerEnded(session, "This livestream has ended.");
-
-                } else if (data.type === "full") {
-                    viewerEnded(
-                        session,
-                        "This stream is full right now. Try again in a bit."
-                    );
-
-                } else if (data.type === "info" && data.title) {
-                    $("clipflyViewerTitle").textContent =
-                        "🔴 " + String(data.title).slice(0, 120);
-                }
-            });
-
-            conn.on("close", function () {
-                if (viewerSession === session) {
-                    viewerEnded(session, "This livestream has ended.");
-                }
-            });
-
-            conn.on("error", function (error) {
-                console.warn("Viewer connection error:", error);
-            });
+            return box ? [box] : [];
         });
 
-        peer.on("call", function (call) {
-            if (viewerSession !== session) {
-                try {
-                    call.close();
-                } catch (error) {
-                    console.warn(error);
-                }
-
-                return;
-            }
-
-            session.call = call;
-
-            call.answer();
-
-            call.on("stream", function (remote) {
-                if (viewerSession === session) {
-                    attachViewerStream(session, remote);
-                }
-            });
-
-            call.on("close", function () {
-                if (viewerSession === session) {
-                    viewerEnded(session, "This livestream has ended.");
-                }
-            });
-        });
-
-        peer.on("error", function (error) {
-            if (viewerSession !== session) {
-                return;
-            }
-
-            if (error && error.type === "peer-unavailable") {
-                setViewerStatus(
-                    "This stream isn't reachable. The streamer may have just ended it."
-                );
-
-            } else {
-                setViewerStatus(
-                    "Connection problem: " +
-                    ((error && (error.message || error.type)) || "unknown")
-                );
-            }
-        });
-
-        session.timer = setTimeout(function () {
-            if (viewerSession === session && !session.gotVideo && !session.ended) {
-                setViewerStatus(
-                    "Still connecting... The streamer's network may be blocking viewers. Try again in a moment."
-                );
-            }
-        }, 15000);
+        await connectViewer(session);
     }
 
     /*
@@ -2133,6 +3350,9 @@
     function initialize() {
         createLiveBar();
 
+        enhanceHostChatPanel();
+        enhanceChangeLivePopup();
+
         const chatInput = $("liveChatInput");
 
         if (chatInput) {
@@ -2186,6 +3406,8 @@
     window.refreshLiveNow = refreshLiveNow;
     window.watchLive = watchLive;
     window.closeLiveViewer = closeViewer;
+    window.clipflyToggleMic = toggleMic;
+    window.clipflyPopOutChat = openChatPopout;
 
     if (document.readyState === "loading") {
         document.addEventListener("DOMContentLoaded", initialize);

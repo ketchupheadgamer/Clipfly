@@ -18,6 +18,7 @@
     const MAX_VIDEO_BITRATE = 2000000;
 
     const MIC_KEY = "clipfly_mic_device";
+    const CHAT_KEY = "clipfly_live_chat_on";
 
     // Routes used to connect streamers and viewers. If you add your own
     // relay in the Supabase "app_settings" table, it is used too.
@@ -73,8 +74,18 @@
     let hostChat = null;
     let hostChatBox = null;
     let hostChatInput = null;
+    let hostChatPanel = null;
     let liveNote = "";
     const viewerLinks = new Map();
+
+    // Chat on / off for the livestream
+    let chatEnabled = true;
+
+    try {
+        chatEnabled = localStorage.getItem(CHAT_KEY) !== "0";
+    } catch (error) {
+        chatEnabled = true;
+    }
 
     // Microphone mixing
     let audioCtx = null;
@@ -373,10 +384,172 @@
     }
 
     function sendLiveChat() {
+        if (!chatEnabled) {
+            return;
+        }
+
         sendChatTo(
             hostChat,
             hostChatTargets,
             hostChatInput || $("liveChatInput")
+        );
+    }
+
+    /*
+     * =========================================
+     * CHAT ON / OFF (streamer)
+     * =========================================
+     */
+
+    function updateChatUI() {
+        ["clipflySetupChatToggle", "clipflyChangeChatToggle"].forEach(function (id) {
+            const button = $(id);
+
+            if (!button) {
+                return;
+            }
+
+            button.textContent = chatEnabled
+                ? "💬 Chat is ON (click to turn off)"
+                : "🚫 Chat is OFF (click to turn on)";
+
+            button.className = chatEnabled ? "blue-button" : "dark-button";
+        });
+
+        const barButton = $("clipflyBarChat");
+
+        if (barButton) {
+            barButton.textContent = chatEnabled ? "💬 Chat on" : "🚫 Chat off";
+        }
+
+        if (liveStream) {
+            updateLiveStatus();
+        }
+    }
+
+    // Shows / hides the streamer's chat box and joins / leaves the chat.
+    function applyHostChatState(announce) {
+        const note = $("clipflyChatOffNote");
+
+        if (chatEnabled) {
+            if (hostChatPanel) {
+                hostChatPanel.style.display = "";
+            }
+
+            if (note) {
+                note.style.display = "none";
+            }
+
+            if (liveRowId && !hostChat) {
+                hostChat = joinChat(liveRowId, hostChatTargets);
+            }
+
+            if (announce && hostChatBox) {
+                appendChat(hostChatBox, "", "Chat is on again.", true);
+            }
+
+        } else {
+            closeChatPopout();
+
+            leaveChat(hostChat);
+
+            hostChat = null;
+
+            if (hostChatPanel) {
+                hostChatPanel.style.display = "none";
+            }
+
+            if (note) {
+                note.style.display = "block";
+            }
+        }
+
+        updateLiveStatus();
+    }
+
+    function setChatEnabled(flag) {
+        chatEnabled = !!flag;
+
+        try {
+            localStorage.setItem(CHAT_KEY, chatEnabled ? "1" : "0");
+        } catch (error) {
+            console.warn(error);
+        }
+
+        updateChatUI();
+
+        // Before you go live this just remembers your choice.
+        if (!liveStream) {
+            return;
+        }
+
+        applyHostChatState(true);
+
+        sendToViewers({ type: "chat", enabled: chatEnabled });
+    }
+
+    function toggleChat() {
+        setChatEnabled(!chatEnabled);
+    }
+
+    function makeChatToggle(id) {
+        const button = document.createElement("button");
+
+        button.id = id;
+        button.type = "button";
+        button.className = "blue-button";
+        button.textContent = "💬 Chat is ON (click to turn off)";
+
+        button.addEventListener("click", toggleChat);
+
+        return button;
+    }
+
+    function makeChatBox(boxId, toggleId, noteText) {
+        const box = document.createElement("div");
+
+        box.id = boxId;
+        box.style.padding = "12px";
+        box.style.borderRadius = "12px";
+        box.style.background = "#101014";
+        box.style.border = "1px solid #35353d";
+
+        const heading = document.createElement("div");
+
+        heading.textContent = "💬 Live chat";
+        heading.style.fontWeight = "700";
+        heading.style.marginBottom = "10px";
+
+        const note = document.createElement("div");
+
+        note.style.marginTop = "10px";
+        note.style.fontSize = "13px";
+        note.style.color = "#9999a5";
+        note.style.lineHeight = "1.4";
+        note.textContent = noteText;
+
+        box.appendChild(heading);
+        box.appendChild(makeChatToggle(toggleId));
+        box.appendChild(note);
+
+        return box;
+    }
+
+    // Adds the chat switch to the "Go Live" window.
+    function enhanceSetupPopup() {
+        const status = $("liveSetupStatus");
+
+        if (!status || !status.parentNode || $("clipflySetupChatBox")) {
+            return;
+        }
+
+        status.parentNode.insertBefore(
+            makeChatBox(
+                "clipflySetupChatBox",
+                "clipflySetupChatToggle",
+                "Viewers can chat while you stream. You can change this any time in Change Live."
+            ),
+            status
         );
     }
 
@@ -404,6 +577,8 @@
         if (!user) {
             return;
         }
+
+        updateChatUI();
 
         popup.style.display = "flex";
 
@@ -998,7 +1173,7 @@
         }
     }
 
-    // Adds the microphone controls to the "Change Live" window.
+    // Adds the microphone and chat controls to the "Change Live" window.
     function enhanceChangeLivePopup() {
         const popup = $("changeLivePopup");
 
@@ -1077,6 +1252,16 @@
 
         saveButton.parentNode.insertBefore(box, saveButton);
 
+        // Chat switch, right under the microphone.
+        saveButton.parentNode.insertBefore(
+            makeChatBox(
+                "clipflyChangeChatBox",
+                "clipflyChangeChatToggle",
+                "Turn chat off to hide it for you and your viewers. You can turn it back on any time."
+            ),
+            saveButton
+        );
+
         if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
             navigator.mediaDevices.addEventListener(
                 "devicechange",
@@ -1085,6 +1270,7 @@
         }
 
         updateMicUI();
+        updateChatUI();
     }
 
     /*
@@ -1275,25 +1461,22 @@
      */
 
     function updateLiveStatus() {
-        const text =
-            (liveNote || "🔴 You are live.") +
-            "   👀 " +
+        const extras =
+            "👀 " +
             viewerLinks.size +
             " watching   " +
-            (micOn ? "🎤 Mic on" : "🔇 Mic off");
+            (micOn ? "🎤 Mic on" : "🔇 Mic off") +
+            "   " +
+            (chatEnabled ? "💬 Chat on" : "🚫 Chat off");
 
         const el = $("liveStatus");
 
         if (el) {
-            el.textContent = text;
+            el.textContent = (liveNote || "🔴 You are live.") + "   " + extras;
         }
 
         if (popout && popout.status) {
-            popout.status.textContent =
-                "👀 " +
-                viewerLinks.size +
-                " watching   " +
-                (micOn ? "🎤 Mic on" : "🔇 Mic off");
+            popout.status.textContent = extras;
         }
     }
 
@@ -1430,7 +1613,11 @@
             watchHostCall(conn.peer, call);
 
             try {
-                conn.send({ type: "info", title: liveTitle });
+                conn.send({
+                    type: "info",
+                    title: liveTitle,
+                    chat: chatEnabled
+                });
             } catch (error) {
                 console.warn(error);
             }
@@ -1696,7 +1883,10 @@
 
             if (hostChatBox) {
                 hostChatBox.innerHTML = "";
-                appendChat(hostChatBox, "", "Live chat started!", true);
+
+                if (chatEnabled) {
+                    appendChat(hostChatBox, "", "Live chat started!", true);
+                }
             }
 
             micOn = false;
@@ -1728,11 +1918,13 @@
                         "🔴 You are live, but viewers may not be able to connect: " +
                         castError;
                 }
-
-                hostChat = joinChat(liveRowId, hostChatTargets);
             }
 
+            // Show or hide the chat, and join it if it's on.
+            applyHostChatState(false);
+
             updateMicUI();
+            updateChatUI();
             refreshLiveNow();
 
         } catch (error) {
@@ -1807,6 +1999,7 @@
 
         refreshMicDevices();
         updateMicUI();
+        updateChatUI();
 
         popup.style.display = "flex";
     }
@@ -2336,6 +2529,10 @@
         }
 
         function submit() {
+            if (!chatEnabled) {
+                return;
+            }
+
             sendChatTo(hostChat, hostChatTargets, input);
         }
 
@@ -2369,7 +2566,7 @@
     }
 
     async function openChatPopout() {
-        if (!liveStream) {
+        if (!liveStream || !chatEnabled) {
             return;
         }
 
@@ -2441,7 +2638,8 @@
         }
     }
 
-    // Adds the "Pop out" bar above the streamer's chat.
+    // Adds the "Pop out" bar above the streamer's chat, plus the note
+    // that shows when chat is turned off.
     function enhanceHostChatPanel() {
         const messages = $("liveChatMessages");
 
@@ -2453,6 +2651,8 @@
         hostChatInput = $("liveChatInput");
 
         const panel = messages.parentNode;
+
+        hostChatPanel = panel;
 
         if (!panel || $("clipflyChatHeader")) {
             return;
@@ -2489,6 +2689,23 @@
         header.appendChild(button);
 
         panel.insertBefore(header, panel.firstChild);
+
+        // Shown instead of the chat when chat is turned off.
+        const offNote = document.createElement("div");
+
+        offNote.id = "clipflyChatOffNote";
+        offNote.style.display = "none";
+        offNote.style.marginTop = "18px";
+        offNote.style.padding = "12px";
+        offNote.style.borderRadius = "10px";
+        offNote.style.background = "#101014";
+        offNote.style.color = "#9999a5";
+        offNote.textContent =
+            "🚫 Chat is turned off. Turn it back on in Change Live.";
+
+        if (panel.parentNode) {
+            panel.parentNode.insertBefore(offNote, panel.nextSibling);
+        }
     }
 
     /*
@@ -2527,6 +2744,15 @@
             </button>
 
             <button
+                id="clipflyBarChat"
+                type="button"
+                class="dark-button"
+                onclick="window.clipflyToggleChat()"
+            >
+                💬 Chat on
+            </button>
+
+            <button
                 type="button"
                 class="dark-button"
                 onclick="window.clipflyChangeLive()"
@@ -2554,6 +2780,7 @@
         bar.style.display = "none";
         bar.style.alignItems = "center";
         bar.style.justifyContent = "center";
+        bar.style.flexWrap = "wrap";
         bar.style.gap = "10px";
 
         document.body.appendChild(bar);
@@ -2578,6 +2805,51 @@
 
         if (button) {
             button.style.display = show ? "inline-block" : "none";
+        }
+    }
+
+    function viewerChatTargets() {
+        const box = $("clipflyViewerChat");
+
+        return box ? [box] : [];
+    }
+
+    // The streamer can turn chat off / on while you're watching.
+    function setViewerChat(session, enabled) {
+        if (viewerSession !== session) {
+            return;
+        }
+
+        session.chatOn = enabled;
+
+        const panel = $("clipflyViewerChatPanel");
+        const note = $("clipflyViewerChatOff");
+
+        if (enabled) {
+            if (panel) {
+                panel.style.display = "";
+            }
+
+            if (note) {
+                note.style.display = "none";
+            }
+
+            if (!session.chat) {
+                session.chat = joinChat(session.id, viewerChatTargets);
+            }
+
+        } else {
+            leaveChat(session.chat);
+
+            session.chat = null;
+
+            if (panel) {
+                panel.style.display = "none";
+            }
+
+            if (note) {
+                note.style.display = "block";
+            }
         }
     }
 
@@ -2623,7 +2895,10 @@
                     style="display:none;margin-top:10px;"
                 >🔁 Try again</button>
 
-                <div style="margin-top:18px;border:1px solid #30303a;border-radius:12px;overflow:hidden;">
+                <div
+                    id="clipflyViewerChatPanel"
+                    style="margin-top:18px;border:1px solid #30303a;border-radius:12px;overflow:hidden;"
+                >
 
                     <div
                         id="clipflyViewerChat"
@@ -2646,21 +2921,20 @@
 
                 </div>
 
+                <div
+                    id="clipflyViewerChatOff"
+                    style="display:none;margin-top:18px;padding:12px;border-radius:10px;background:#101014;color:#9999a5;"
+                >🚫 The streamer turned chat off for this stream.</div>
+
             </div>
         `;
 
         document.body.appendChild(popup);
 
-        function viewerChatTargets() {
-            const box = $("clipflyViewerChat");
-
-            return box ? [box] : [];
-        }
-
         function sendViewerChat() {
             const session = viewerSession;
 
-            if (!session) {
+            if (!session || session.chatOn === false) {
                 return;
             }
 
@@ -2899,9 +3173,18 @@
 
                     showViewerRetry(true);
 
-                } else if (data.type === "info" && data.title) {
-                    $("clipflyViewerTitle").textContent =
-                        "🔴 " + String(data.title).slice(0, 120);
+                } else if (data.type === "info") {
+                    if (data.title) {
+                        $("clipflyViewerTitle").textContent =
+                            "🔴 " + String(data.title).slice(0, 120);
+                    }
+
+                    if (typeof data.chat === "boolean") {
+                        setViewerChat(session, data.chat);
+                    }
+
+                } else if (data.type === "chat") {
+                    setViewerChat(session, !!data.enabled);
                 }
             });
 
@@ -3022,6 +3305,18 @@
 
         appendChat(chatBox, "", "Welcome to the live chat!", true);
 
+        // Chat starts visible; the streamer's info message can turn it off.
+        const chatPanel = $("clipflyViewerChatPanel");
+        const chatOff = $("clipflyViewerChatOff");
+
+        if (chatPanel) {
+            chatPanel.style.display = "";
+        }
+
+        if (chatOff) {
+            chatOff.style.display = "none";
+        }
+
         const video = $("clipflyViewerVideo");
 
         video.muted = false;
@@ -3040,6 +3335,7 @@
             conn: null,
             call: null,
             chat: null,
+            chatOn: true,
             timer: null,
             gotVideo: false,
             ended: false,
@@ -3049,11 +3345,7 @@
 
         viewerSession = session;
 
-        session.chat = joinChat(stream.id, function () {
-            const box = $("clipflyViewerChat");
-
-            return box ? [box] : [];
-        });
+        session.chat = joinChat(stream.id, viewerChatTargets);
 
         await connectViewer(session);
     }
@@ -3351,7 +3643,10 @@
         createLiveBar();
 
         enhanceHostChatPanel();
+        enhanceSetupPopup();
         enhanceChangeLivePopup();
+
+        updateChatUI();
 
         const chatInput = $("liveChatInput");
 
@@ -3407,6 +3702,7 @@
     window.watchLive = watchLive;
     window.closeLiveViewer = closeViewer;
     window.clipflyToggleMic = toggleMic;
+    window.clipflyToggleChat = toggleChat;
     window.clipflyPopOutChat = openChatPopout;
 
     if (document.readyState === "loading") {

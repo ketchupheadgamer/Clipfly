@@ -3,7 +3,8 @@
 
     /*
      * Notifications: a bell in the top bar that tells you when someone
-     * subscribes, comments, replies or likes your video.
+     * subscribes, comments, replies, likes your video, or when a channel
+     * you follow goes live or uploads.
      * Needs the notifications SQL in Supabase.
      */
 
@@ -72,7 +73,9 @@
         subscribe: "👥",
         comment: "💬",
         reply: "↩️",
-        like: "👍"
+        like: "👍",
+        live: "🔴",
+        upload: "🎬"
     };
 
     /*
@@ -323,6 +326,42 @@
         return !!popup && popup.style.display !== "none";
     }
 
+    // Opens the livestream a notification is about, if it's still live.
+    async function openLive(liveId) {
+        try {
+            var result = await window.supabaseClient
+                .from("live_streams")
+                .select("*")
+                .eq("id", liveId)
+                .maybeSingle();
+
+            if (result.error) {
+                throw result.error;
+            }
+
+            var row = result.data;
+
+            var fresh =
+                row &&
+                row.is_live &&
+                Date.now() - new Date(row.last_seen).getTime() < 180000;
+
+            if (!fresh) {
+                toast("That livestream has ended.");
+                return;
+            }
+
+            if (typeof window.watchLive === "function") {
+                window.watchLive(row);
+            }
+
+        } catch (error) {
+            console.warn("Could not open the livestream:", error);
+
+            toast("Couldn't open that livestream.");
+        }
+    }
+
     async function openItem(row) {
         closePopup();
 
@@ -344,6 +383,11 @@
 
             } else if (typeof openUserChannel === "function" && row.actor_id) {
                 openUserChannel(row.actor_name || "User", null, row.actor_id);
+            }
+
+        } else if (row.type === "live") {
+            if (row.video_id) {
+                openLive(row.video_id);
             }
 
         } else if (
@@ -485,7 +529,7 @@
                 mk(
                     "div",
                     "cfn-note",
-                    "Nothing yet. When someone subscribes, comments, replies or likes your video, you'll see it here."
+                    "Nothing yet. You'll see it here when someone subscribes, comments, replies or likes your video, or when a channel you follow goes live or uploads."
                 )
             );
 
@@ -554,8 +598,8 @@
 
         setUnread(unread + 1);
 
-        toast("🔔 " + row.message, {
-            ms: 6000,
+        toast((ICONS[row.type] || "🔔") + " " + row.message, {
+            ms: 7000,
             onClick: function () {
                 openItem(row);
             }
